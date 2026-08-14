@@ -1058,7 +1058,9 @@ def mail_html(rows: list[list], period: str, end: datetime, root: Path,
     td = "padding:6px 8px;border:1px solid #d0d0d0;vertical-align:top"
 
     n_c = sum(1 for r in rows if r[COL_GRADE] == "C")
-    parts = [f'<div style="font-family:{FONT};font-size:13px;color:#222">']
+    # 본문 기본 크기. 첫줄('… 신규 공고입니다')과 요약 줄이 이걸 물려받는다.
+    # 아웃룩은 pt 로 적어야 워드에서 보던 크기와 같게 나온다.
+    parts = [f'<div style="font-family:{FONT};font-size:11pt;color:#222">']
 
     # 0건이면 한 줄만 보낸다. 조회기간·등급설명은 볼 표가 없으면 군더더기다.
     if not rows:
@@ -1073,7 +1075,7 @@ def mail_html(rows: list[list], period: str, end: datetime, root: Path,
                      f'{as_html(fill(text, "요약", 건수=건수, 내역=내역))}</p>')
         # 아웃룩은 표 안에서 바깥 글꼴을 물려받지 않는다. 표에도 다시 적는다.
         parts.append('<table cellspacing="0" cellpadding="0" '
-                     f'style="border-collapse:collapse;font-size:12px;'
+                     f'style="border-collapse:collapse;font-size:10pt;'
                      f'font-family:{FONT}">')
         parts.append("<tr>" + "".join(
             f'<th style="{th}">{esc(h)}</th>' for h in MAIL_HEADERS) + "</tr>")
@@ -1103,10 +1105,10 @@ def mail_html(rows: list[list], period: str, end: datetime, root: Path,
                 "</tr>")
         parts.append("</table>")
 
-        parts.append(f'<p style="margin:12px 0 0;font-size:12px;color:#777">'
+        parts.append(f'<p style="margin:12px 0 0;font-size:10pt;color:#777">'
                      f'{as_html(fill(text, "안내"))}</p>')
         if n_c:
-            parts.append(f'<p style="margin:4px 0 0;font-size:12px;color:#777">'
+            parts.append(f'<p style="margin:4px 0 0;font-size:10pt;color:#777">'
                          f'{as_html(fill(text, "검토안내"))}</p>')
 
     # 0건 메일은 문구 한 줄로 끝낸다. 첨부도 안내문도 붙이지 않는다.
@@ -1114,9 +1116,9 @@ def mail_html(rows: list[list], period: str, end: datetime, root: Path,
         if attached:
             names = ", ".join(esc(p.name) for p in attached[:6])
             more = f" 외 {len(attached) - 6}개" if len(attached) > 6 else ""
-            parts.append(f'<p style="margin:10px 0 0;font-size:12px;color:#777">'
+            parts.append(f'<p style="margin:10px 0 0;font-size:10pt;color:#777">'
                          f'첨부: {names}{more}</p>')
-        parts.append(f'<p style="margin:10px 0 0;font-size:11px;color:#999">'
+        parts.append(f'<p style="margin:10px 0 0;font-size:9.5pt;color:#999">'
                      f'{as_html(fill(text, "꼬리말", 폴더=root))}</p>')
     parts.append("</div>")
     return "\n".join(parts)
