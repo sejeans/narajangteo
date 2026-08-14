@@ -6,6 +6,11 @@
 메모장으로 YAML 을 직접 고치면 들여쓰기와 따옴표를 틀리기 쉽고, 고친 결과가
 점수에 어떻게 먹히는지는 돌려봐야 알 수 있다. 이 편집기는 값을 고르는 화면을
 주고, 저장하기 전에 공고명을 넣어 점수가 어떻게 나오는지 바로 보여준다.
+메일 문구도 저장 전에 메일 한 통을 통째로 그려서 보여준다.
+
+'실행' 탭에서 수집기를 돌릴 수 있다. 수집은 설정을 고치는 것과 성격이 달라
+(몇 분 걸리고, API 호출한도를 쓰고, 메일이 실제로 나가고, 수집이력을 바꾼다)
+저장 버튼 옆이 아니라 탭을 따로 두고 진행 기록을 그대로 보여준다.
 
 주석을 지우지 않는다.
 YAML 전체를 다시 써서 덮는 방식이 아니라, 고칠 줄만 찾아 그 줄만 바꾼다.
@@ -15,6 +20,7 @@ YAML 전체를 다시 써서 덮는 방식이 아니라, 고칠 줄만 찾아 �
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -25,7 +31,7 @@ import sys
 import tempfile
 import threading
 import webbrowser
-from datetime import datetime
+from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -41,6 +47,7 @@ CONFIG_PATH = HERE / "config.yaml"
 TABLE_PATH = HERE / "점수표.yaml"
 BACKUP_DIR = HERE / "백업"
 VERIFY_SCRIPT = HERE / "점수표_검증.py"
+COLLECTOR = HERE / "수집기.py"
 
 # SMTP 비밀번호는 화면에 그대로 띄우지 않는다. 사내 메일 계정 자격증명이다.
 # 저장할 때 이 값이 그대로 돌아오면 '고치지 않았다' 로 본다.
@@ -443,7 +450,10 @@ CONFIG_SCHEMA = [
      ]},
     {"group": "조회 대상",
      "fields": [
-         F("targets", "업무구분", "list", help="용역 / 물품 / 공사"),
+         F("targets", "업무구분", "list",
+           help="용역 / 물품 / 공사. ⚠ 물품·공사에는 채권평가회사가 맡을 공고가 "
+                "거의 없는 반면 조회량은 몇 배로 늘어 API 일일 호출한도를 넘길 수 "
+                "있습니다. 특별한 이유가 없으면 용역만 두세요."),
          F("industry_codes", "무조건 수집할 업종코드", "list",
            help="3865 = 채권평가회사"),
      ]},
@@ -474,18 +484,20 @@ CONFIG_SCHEMA = [
                 "구분할 수 없습니다. 켜두는 편이 안전합니다."),
      ]},
     {"group": "메일 문구",
-     "note": "{중괄호} 는 보낼 때 값으로 바뀝니다. 없는 이름을 쓰면 그 줄만 "
-             "기본 문구로 나가고 화면에 알려줍니다.",
+     "note": "{중괄호} 는 보낼 때 값으로 바뀝니다. 항목마다 쓸 수 있는 이름이 "
+             "다릅니다. 없는 이름을 쓰면 예외로 죽지 않고 그 줄만 조용히 기본 "
+             "문구로 나가므로, 아래 경고를 그때그때 확인하세요.",
+     "action": {"id": "mailprev", "label": "메일 미리보기"},
      "fields": [
          F("mail.문구.제목", "제목 (공고 있을 때)", "str",
-           help="쓸 수 있는 값: {날짜} {건수} {내역}"),
-         F("mail.문구.제목_없음", "제목 (0건일 때)", "str", help="{날짜}"),
-         F("mail.문구.첫줄", "본문 첫 줄", "str", help="{시각} {기간}"),
-         F("mail.문구.요약", "표 위 요약", "str", help="{건수} {내역}"),
-         F("mail.문구.없음", "0건일 때 본문", "str", help="{날짜}"),
-         F("mail.문구.안내", "표 아래 안내 (A·B·C 설명)", "text"),
-         F("mail.문구.검토안내", "C가 있을 때 덧붙는 안내", "text"),
-         F("mail.문구.꼬리말", "맨 아래 작은 글씨", "str", help="{폴더}"),
+           vars=["날짜", "건수", "내역"]),
+         F("mail.문구.제목_없음", "제목 (0건일 때)", "str", vars=["날짜"]),
+         F("mail.문구.첫줄", "본문 첫 줄", "str", vars=["시각", "기간"]),
+         F("mail.문구.요약", "표 위 요약", "str", vars=["건수", "내역"]),
+         F("mail.문구.없음", "0건일 때 본문", "str", vars=["날짜"]),
+         F("mail.문구.안내", "표 아래 안내 (A·B·C 설명)", "text", vars=[]),
+         F("mail.문구.검토안내", "C가 있을 때 덧붙는 안내", "text", vars=[]),
+         F("mail.문구.꼬리말", "맨 아래 작은 글씨", "str", vars=["폴더"]),
      ]},
     {"group": "SMTP (발송 방식이 smtp 일 때만)",
      "fields": [
@@ -621,6 +633,284 @@ def restore(which: str) -> dict:
 
 
 # ===========================================================================
+#  메일 미리보기
+# ===========================================================================
+#
+# 문구를 필드별로 따로 보면 실제 메일이 어떻게 생겼는지 알 수 없다. 안내는 표
+# 아래에 붙고 검토안내는 C가 있을 때만 나오며, 0건 메일은 아예 다른 문구를 쓴다.
+# 그래서 가짜 공고 몇 건을 만들어 수집기의 mail_subject / mail_html 을 그대로
+# 부른다. 여기서 HTML 을 새로 짜면 미리보기와 실제 메일이 갈라져 오히려 해롭다.
+
+_MOD = None          # 수집기 모듈 / 못 읽은 이유(str) / None(아직 안 해봄)
+
+
+def collector() -> tuple[object, str]:
+    """수집기 모듈을 불러온다. (모듈, 오류메시지) 중 한쪽만 찬다.
+
+    수집기는 requests·openpyxl 이 없으면 import 도중 sys.exit 한다. 그것을
+    그대로 두면 편집기까지 죽으므로 SystemExit 도 잡는다. 미리보기만 못 쓰고
+    나머지 편집 기능은 그대로 돌아야 한다.
+    """
+    global _MOD
+    if _MOD is None:
+        try:
+            import 수집기 as mod
+            _MOD = mod
+        except SystemExit as exc:
+            _MOD = str(exc).strip() or "수집기.py 를 불러오지 못했습니다."
+        except Exception as exc:                       # noqa: BLE001
+            _MOD = f"{type(exc).__name__}: {exc}"
+    return (None, _MOD) if isinstance(_MOD, str) else (_MOD, "")
+
+
+@contextlib.contextmanager
+def captured(mod):
+    """수집기가 log() 로 남기는 [주의] 를 가로채 화면으로 가져온다.
+
+    fill() 은 자리표시자가 틀려도 예외를 내지 않고 기본 문구로 되돌린 뒤
+    로그에만 적는다. 그 로그가 미리보기에서 확인해야 할 바로 그 내용이다.
+    """
+    msgs: list[str] = []
+    orig = mod.log
+    mod.log = lambda m="": msgs.append(str(m))
+    try:
+        yield msgs
+    finally:
+        mod.log = orig
+
+
+def sample_rows(mod) -> list[list]:
+    """미리보기용 가짜 3건. A·B·C 를 하나씩 둬야 줄 색과 검토안내까지 다 보인다."""
+    today = f"{datetime.now():%Y-%m-%d}"
+    due = f"{datetime.now() + timedelta(days=7):%Y-%m-%d} 10:00"
+
+    def row(grade, dm, title, score, kw, why, no):
+        r = [""] * len(mod.HEADERS)
+        r[mod.COL_GRADE] = grade
+        r[mod.COL_REG] = today
+        r[mod.COL_DM] = dm
+        r[mod.COL_NT] = "조달청"
+        r[mod.COL_TITLE] = title
+        r[mod.COL_DUE] = due
+        r[mod.COL_SCORE] = score
+        r[mod.COL_KW] = kw
+        r[mod.COL_WHY] = why
+        r[mod.COL_NO] = no
+        r[mod.COL_LINK] = "https://www.g2b.go.kr/"
+        r[mod.COL_STAMP] = mod.RUN_STAMP
+        return r
+
+    return [
+        row("A", "경찰공제회", "2026~2027년 대체투자자산 공정가치 평가·검증 용역",
+            21, "업종코드 3865", "확정: 공정가치평가 · 기관+3", "20260814001"),
+        row("B", "새마을금고중앙회",
+            "새마을금고중앙회 대체투자자산 공정가치 평가 및 투자성과 모니터링 용역",
+            16, "-", "확정: 공정가치평가 · 대상: 대체투자 · 기관+3", "20260814002"),
+        row("C", "국민연금공단", "기준 포트폴리오 도입을 위한 자산배분 체계 연구용역",
+            6, "-", "대상: 자산배분 · 행위: 연구 · 기관+3", "20260814003"),
+    ]
+
+
+def mail_preview(values: dict, empty: bool) -> dict:
+    """저장하지 않은 지금 화면의 문구로 메일 한 통을 통째로 만들어 본다."""
+    mod, err = collector()
+    if mod is None:
+        return {"ok": False,
+                "error": "미리보기는 수집기.py 를 불러올 수 있어야 합니다.\n" + err}
+
+    text = {k.rsplit(".", 1)[1]: v for k, v in values.items()
+            if k.startswith("mail.문구.")}
+    rows = [] if empty else sample_rows(mod)
+
+    end = datetime.now(mod.KST)
+    hours = int(values.get("hours") or 168)
+    period = mod.period_phrase(end - timedelta(hours=hours), end)
+    root = str(values.get("output_dir") or "./수집결과")
+
+    # 첨부 안내 줄도 설정을 따라간다. 켜둔 줄 모르고 있다가 메일에서 보는 것보다
+    # 여기서 보이는 편이 낫다.
+    attached: list[Path] = []
+    if rows and values.get("mail.attach_excel"):
+        attached.append(Path("공고목록.xlsx"))
+    if rows and values.get("mail.attach_pdf"):
+        attached += [Path(f"경찰공제회_대체투자자산 공정가치 평가·검증 용역_"
+                          f"2026081400{i}.pdf") for i in (1, 2, 3)]
+
+    with captured(mod) as msgs:
+        subject = mod.mail_subject({"mail": {"문구": text}}, rows, end)
+        html = mod.mail_html(rows, period, end, root, attached, text)
+    return {"ok": True, "subject": subject, "html": html, "warnings": msgs}
+
+
+# ===========================================================================
+#  수집기 실행
+# ===========================================================================
+#
+# 설정을 고치는 것과 수집기를 돌리는 것은 성격이 다르다. 수집은 몇 분 걸리고,
+# API 일일 호출한도를 쓰고, 메일이 실제로 나가고, 수집이력과 엑셀을 바꾼다.
+# 그래서 저장 버튼 옆이 아니라 따로 탭을 두고, 진행 기록을 그대로 보여준다.
+
+RUN_LOCK = threading.Lock()
+RUN: dict = {"proc": None, "lines": [], "dropped": 0, "code": None,
+             "cmd": "", "started": "", "stopped": False, "lock": None}
+MAX_LOG_LINES = 5000
+
+ALLOWED_FLAGS = {"--목록만", "--pdf없이", "--메일없이", "--메일만"}
+DAYS_RE = re.compile(r"^\d{1,3}(\.\d{1,2})?$")
+WHEN_RE = re.compile(r"^\d{4}-\d{2}-\d{2}([ T]\d{1,2}:\d{2})?$")
+
+
+def check_args(args: list) -> str:
+    """브라우저가 보낸 인자를 그대로 믿지 않는다. 통과하면 빈 문자열.
+
+    이 서버는 127.0.0.1 의 임의 포트에 열려 있고, 브라우저에 떠 있는 다른
+    페이지도 이 주소로 요청을 보낼 수 있다. 돌릴 수 있는 것은 수집기의 정해진
+    옵션뿐이어야 한다.
+    """
+    i, n_days = 0, 0
+    while i < len(args):
+        a = args[i]
+        if not isinstance(a, str):
+            return "인자를 읽지 못했습니다."
+        if a in ("--기준", "--저장"):
+            v = args[i + 1] if i + 1 < len(args) else None
+            if not isinstance(v, str) or not v.strip() or v.startswith("--"):
+                return f"{a} 뒤에 값이 없습니다."
+            if a == "--기준" and not WHEN_RE.match(v.strip()):
+                return f"기준시각 형식이 맞지 않습니다: {v}"
+            if a == "--저장" and len(v) > 200:
+                return "저장 폴더 경로가 너무 깁니다."
+            i += 2
+            continue
+        if a.startswith("--"):
+            if a not in ALLOWED_FLAGS:
+                return f"쓸 수 없는 옵션입니다: {a}"
+        elif DAYS_RE.match(a):
+            n_days += 1
+            if n_days > 1:
+                return "일수는 하나만 넣을 수 있습니다."
+        else:
+            return f"쓸 수 없는 인자입니다: {a}"
+        i += 1
+    return ""
+
+
+def lock_path(args: list) -> Path | None:
+    """수집기가 만드는 _실행중.lock 위치.
+
+    중지를 누르면 수집기가 __exit__ 을 못 타고 죽어 이 파일이 남는다. 그대로
+    두면 3시간 동안 '다른 PC에서 이미 실행 중' 으로 막히므로 우리가 치운다.
+    """
+    raw = None
+    for i, a in enumerate(args):
+        if a == "--저장" and i + 1 < len(args):
+            raw = args[i + 1]
+    if raw is None:
+        try:
+            raw = (yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8"))
+                   or {}).get("output_dir")
+        except (OSError, yaml.YAMLError):
+            return None
+    if not raw:
+        return None
+    p = Path(str(raw).strip().strip('"'))
+    if not p.is_absolute():
+        p = HERE / p
+    return p / "_실행중.lock"
+
+
+def clear_lock() -> list[str]:
+    """중간에 죽은 수집기가 남긴 _실행중.lock 을 치운다.
+
+    그대로 두면 3시간 동안 '다른 PC에서 이미 실행 중' 으로 막힌다.
+    """
+    lock = RUN["lock"]
+    if lock is None or not lock.exists():
+        return []
+    try:
+        lock.unlink()
+        return [f"[중지] 남은 잠금 파일을 지웠습니다: {lock}"]
+    except OSError as exc:
+        return [f"[중지] 잠금 파일을 지우지 못했습니다. 직접 지우세요: {lock} ({exc})"]
+
+
+def pump(proc) -> None:
+    """수집기가 뱉는 줄을 받아 쌓는다. 화면은 이것을 폴링해서 가져간다."""
+    for raw in iter(proc.stdout.readline, b""):
+        line = raw.decode("utf-8", "replace").rstrip("\r\n")
+        with RUN_LOCK:
+            RUN["lines"].append(line)
+            over = len(RUN["lines"]) - MAX_LOG_LINES
+            if over > 0:
+                del RUN["lines"][:over]
+                RUN["dropped"] += over
+    proc.stdout.close()
+    code = proc.wait()
+
+    stopped = RUN["stopped"]
+    tail = clear_lock() if stopped else []
+    tail.append("[중지했습니다]" if stopped else
+                ("[끝났습니다]" if code == 0 else f"[끝났습니다 — 오류 코드 {code}]"))
+    with RUN_LOCK:
+        RUN["lines"] += tail
+        RUN["code"] = code
+
+
+def start_run(args: list) -> dict:
+    if not COLLECTOR.exists():
+        return {"ok": False, "error": "수집기.py 가 없습니다."}
+    bad = check_args(args)
+    if bad:
+        return {"ok": False, "error": bad}
+
+    with RUN_LOCK:
+        proc = RUN["proc"]
+        if proc is not None and proc.poll() is None:
+            return {"ok": False, "error": "이미 실행 중입니다. 끝나면 다시 누르세요."}
+
+    # 자식이 utf-8 로 뱉게 맞춘다. 안 그러면 윈도우 콘솔 코드페이지(949)로
+    # 나와 여기서 읽을 때 깨진다.
+    env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+    try:
+        proc = subprocess.Popen([sys.executable, str(COLLECTOR), *args],
+                                cwd=str(HERE), env=env, stdin=subprocess.DEVNULL,
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                creationflags=flags)
+    except OSError as exc:
+        return {"ok": False, "error": f"실행하지 못했습니다: {exc}"}
+
+    cmd = "python 수집기.py " + " ".join(
+        f'"{a}"' if " " in a else a for a in args)
+    with RUN_LOCK:
+        RUN.update(proc=proc, lines=[f"$ {cmd}", ""], dropped=0, code=None,
+                   cmd=cmd, started=f"{datetime.now():%H:%M:%S}", stopped=False,
+                   lock=lock_path(args))
+    threading.Thread(target=pump, args=(proc,), daemon=True).start()
+    return {"ok": True, "cmd": cmd}
+
+
+def run_log(want: int) -> dict:
+    with RUN_LOCK:
+        proc = RUN["proc"]
+        start = max(0, want - RUN["dropped"])
+        return {"lines": RUN["lines"][start:],
+                "next": RUN["dropped"] + len(RUN["lines"]),
+                "running": proc is not None and proc.poll() is None,
+                "code": RUN["code"], "cmd": RUN["cmd"], "started": RUN["started"]}
+
+
+def stop_run() -> dict:
+    with RUN_LOCK:
+        proc = RUN["proc"]
+        if proc is None or proc.poll() is not None:
+            return {"ok": False, "error": "실행 중이 아닙니다."}
+        RUN["stopped"] = True
+    proc.terminate()
+    return {"ok": True}
+
+
+# ===========================================================================
 #  화면
 # ===========================================================================
 
@@ -682,10 +972,22 @@ pre{white-space:pre-wrap;background:var(--bg);border:1px solid var(--line);
 .msg{padding:10px 14px;border-radius:8px;margin-bottom:14px;font-size:14px}
 .msg.ok{background:var(--chip);border:1px solid var(--ok)}
 .msg.bad{background:var(--chip);border:1px solid var(--warn);color:var(--warn)}
+.msg.info{background:var(--chip);border:1px solid var(--line);color:var(--dim)}
+.msg:empty{display:none}
 .dim{color:var(--dim)}
 dialog{border:1px solid var(--line);border-radius:10px;background:var(--card);color:var(--fg);
   max-width:760px;width:90%;padding:18px}
+dialog.wide{max-width:1100px}
 dialog::backdrop{background:#0008}
+.vwarn{color:var(--warn);font-size:13px;margin-top:6px}
+.vwarn:empty{display:none}
+.rrow{display:flex;gap:7px;align-items:center;flex-wrap:wrap;padding:6px 0}
+.rrow input[type=number]{max-width:86px}
+.rrow input[type=datetime-local]{max-width:210px;width:auto}
+.opt{display:block;padding:5px 0}
+.opt .dim{font-size:13px}
+#cmdline{margin:0 0 12px;user-select:all}
+#runlog{max-height:46vh;min-height:150px;overflow:auto;margin:0}
 </style>
 
 <header>
@@ -693,6 +995,7 @@ dialog::backdrop{background:#0008}
   <div class=tabs>
     <button class="tab on" data-f=table>점수표.yaml</button>
     <button class=tab data-f=config>config.yaml</button>
+    <button class=tab data-f=run>실행</button>
   </div>
   <span id=dirty class=dim></span>
   <button id=dupbtn>중복 검사</button>
@@ -704,6 +1007,78 @@ dialog::backdrop{background:#0008}
 <main>
   <div id=msg></div>
   <div id=body></div>
+
+  <div id=runpane style="display:none">
+    <div class=grp>
+      <h2>조회 범위</h2>
+      <p class=note>수집기는 화면 값이 아니라 <b>저장된 파일</b>을 읽습니다.
+        고친 것이 있으면 먼저 저장하세요.</p>
+      <div class=f>
+        <div class=rrow>
+          <label class=sw><input type=radio name=rrange value=cfg checked>
+            config 의 hours 그대로</label>
+          <span class=dim id=cfghours></span>
+          <span class=dim>— 매일 자동 실행과 같은 조건</span>
+        </div>
+        <div class=rrow>
+          <label class=sw><input type=radio name=rrange value=days> 최근</label>
+          <input type=number id=r_days value=7 min=0.25 step=0.25> 일
+          <span class=dim id=daysh></span>
+        </div>
+        <div class=rrow>
+          <label class=sw><input type=radio name=rrange value=when> 기준시각</label>
+          <input type=datetime-local id=r_when> 부터 거슬러
+          <input type=number id=r_wdays value=0.75 min=0.25 step=0.25> 일
+          <span class=dim id=wdaysh></span>
+        </div>
+        <p class=help>기준시각을 넣으면 그 시각에 돌렸다고 치고 그때까지 올라온
+          공고만 봅니다. 지난 회차에 어떤 메일이 나갔을지 다시 만들어 볼 때 씁니다.</p>
+      </div>
+    </div>
+
+    <div class=grp>
+      <h2>옵션</h2>
+      <label class="sw opt"><input type=checkbox id=o_list> PDF 저장 안 함
+        <span class=dim>(--목록만) 점수표를 다듬을 때. 공고문을 받지 않아
+          빠르고 엑셀만 나옵니다</span></label>
+      <label class="sw opt"><input type=checkbox id=o_nopdf> PDF 검사 생략
+        <span class=dim>(--pdf없이) 훨씬 빠르지만 1·2차만 봅니다.
+          공고문에만 업종코드가 적힌 건을 놓칩니다</span></label>
+      <label class="sw opt"><input type=checkbox id=o_nomail checked> 메일 보내지 않음
+        <span class=dim>(--메일없이) 수집만 하고 발송은 건너뜁니다</span></label>
+      <div class=f>
+        <div class=lab><b>저장 폴더</b></div>
+        <p class=help>비우면 config 의 결과 폴더(<span id=cfgout></span>)에 그대로 씁니다.
+          <b>기준시각을 지정할 때는 반드시 다른 폴더로 하세요</b> —
+          진짜 수집이력·공고목록.xlsx 에 재현 결과가 섞입니다.</p>
+        <input type=text id=r_out placeholder="비우면 config 의 결과 폴더">
+      </div>
+    </div>
+
+    <div class=grp>
+      <div id=runwarn class=msg></div>
+      <pre id=cmdline></pre>
+      <div class=rrow>
+        <button id=runbtn class=primary>실행</button>
+        <button id=stopbtn disabled>중지</button>
+        <span id=runstat class=dim></span>
+      </div>
+    </div>
+
+    <div class=grp>
+      <h2>실행 기록</h2>
+      <pre id=runlog>아직 실행하지 않았습니다.</pre>
+    </div>
+
+    <div class=grp>
+      <h2>메일만 다시 보내기</h2>
+      <p class=note>수집을 하지 않고, 저장 폴더의 공고목록.xlsx 에 있는 마지막
+        회차를 그대로 메일로 보냅니다. 발송이 실패했을 때 다시 보내거나 발송
+        방식을 시험할 때 씁니다.
+        <b>config 의 mail.enabled 가 꺼져 있어도 보냅니다.</b></p>
+      <button id=mailonlybtn>마지막 회차 메일만 보내기</button>
+    </div>
+  </div>
 
   <div id=test>
     <div class=row>
@@ -719,7 +1094,7 @@ dialog::backdrop{background:#0008}
 </dialog>
 
 <script>
-let S={}, cur='table', orig={};
+let S={}, cur='table', orig={}, FMAP={};
 const $=s=>document.querySelector(s);
 
 async function api(p,b){
@@ -734,26 +1109,60 @@ function dirtyCount(){
   return n;
 }
 function markDirty(){
-  const a=JSON.stringify(S[cur].values)!==JSON.stringify(orig[cur]);
   const n=dirtyCount();
   $('#dirty').textContent=n?`고친 파일 ${n}개`:'';
   $('#savebtn').disabled=!n;
-  return a;
+  if(cur==='run') runRefresh();
+  return n;
 }
 
 function render(){
   document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('on',b.dataset.f===cur));
+  const isRun = cur==='run';
   $('#test').style.display = cur==='table' ? '' : 'none';
+  $('#body').style.display = isRun ? 'none' : '';
+  $('#runpane').style.display = isRun ? '' : 'none';
+  // 실행 탭에서는 점수표용 버튼과 되돌리기가 가리킬 대상이 없다.
+  for(const id of ['#dupbtn','#verbtn','#undobtn'])
+    $(id).style.display = isRun ? 'none' : '';
+  if(isRun){ markDirty(); return; }
+
   const V=S[cur].values, out=[];
+  FMAP={};
   for(const g of S[cur].schema){
     out.push(`<div class=grp><h2>${esc(g.group)}</h2>`);
     if(g.note) out.push(`<p class=note>${esc(g.note)}</p>`);
-    for(const f of g.fields) out.push(field(f,V[f.path]));
+    for(const f of g.fields){ FMAP[f.path]=f; out.push(field(f,V[f.path])); }
+    if(g.action) out.push(`<div class=f><button id="${esc(g.action.id)}">`
+      +`${esc(g.action.label)}</button></div>`);
     out.push(`</div>`);
   }
   $('#body').innerHTML=out.join('');
   bind();
+  for(const p in FMAP) if(FMAP[p].vars) checkVars(FMAP[p], V[p]);
   markDirty();
+}
+
+// {중괄호} 안의 이름이 그 항목에서 쓸 수 있는 것인지 본다.
+// 틀리면 수집기가 예외를 내지 않고 그 줄만 기본 문구로 되돌리므로,
+// 메일이 나간 뒤에는 알아채기 어렵다. 여기서 잡는다.
+function varProblems(tpl,allowed){
+  const t=String(tpl??'').replace(/\{\{|\}\}/g,'');   // {{ 는 글자 그대로의 {
+  const bad=[];
+  for(const m of t.matchAll(/\{([^{}]*)\}/g)){
+    const name=m[1].split(/[:!]/)[0].trim();
+    if(!allowed.includes(name)) bad.push('{'+m[1]+'}');
+  }
+  if(/[{}]/.test(t.replace(/\{[^{}]*\}/g,''))) bad.push('짝이 맞지 않는 중괄호');
+  return bad;
+}
+function checkVars(f,v){
+  const el=document.querySelector(`[data-bad="${f.path}"]`);
+  if(!el) return;
+  const bad=varProblems(v,f.vars);
+  el.textContent = bad.length
+    ? `⚠ 여기서 쓸 수 없습니다: ${bad.join(', ')} — 이대로 두면 이 줄만 기본 문구로 나갑니다`
+    : '';
 }
 
 function esc(s){return String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
@@ -763,7 +1172,11 @@ function field(f,v){
   const head=`<div class=lab><b>${esc(f.label)}</b>`
     +(f.score?`<span class=score>${esc(f.score)}</span>`:'')
     +(f.type==='list'?`<span class=cnt>${v.length}개</span>`:'')
-    +`</div>`+(f.help?`<p class=help>${esc(f.help)}</p>`:'');
+    +`</div>`+(f.help?`<p class=help>${esc(f.help)}</p>`:'')
+    +(f.vars?`<p class=help>쓸 수 있는 값: `
+      +(f.vars.length?f.vars.map(x=>'{'+esc(x)+'}').join(' ')
+                     :'없음 — 중괄호를 쓰면 기본 문구로 되돌아갑니다')+`</p>`:'');
+  const tail=f.vars?`<div class=vwarn data-bad="${esc(f.path)}"></div>`:'';
   let ctl='';
   if(f.type==='list'){
     const chips=v.map((w,i)=>{
@@ -788,7 +1201,7 @@ function field(f,v){
   }else{
     ctl=`<input type=text data-p="${f.path}" value="${esc(v)}">`;
   }
-  return `<div class=f>${head}${ctl}</div>`;
+  return `<div class=f>${head}${ctl}${tail}</div>`;
 }
 
 function bind(){
@@ -799,9 +1212,11 @@ function bind(){
       else if(el.type==='number'){const n=parseInt(el.value,10);S[cur].values[p]=isNaN(n)?0:n;}
       else S[cur].values[p]=el.value;
       if(el.type==='checkbox'){el.parentNode.lastChild.textContent=' '+(el.checked?'켜짐':'꺼짐');}
+      if(FMAP[p]&&FMAP[p].vars) checkVars(FMAP[p],el.value);
       markDirty();
     };
   });
+  const mp=$('#mailprev'); if(mp) mp.onclick=()=>mailPreview(false);
   document.querySelectorAll('[data-del]').forEach(b=>{
     b.onclick=()=>{S[cur].values[b.dataset.del].splice(+b.dataset.i,1);render();};
   });
@@ -912,12 +1327,182 @@ function configData(){
 }
 $('#t_title').oninput=testScore;$('#t_org').oninput=testScore;
 
-function show(t,h){$('#dlgbody').innerHTML=`<h2 style="margin:0 0 10px;font-size:15px">${esc(t)}</h2>${h}`;dlg.showModal();}
+function show(t,h,wide){
+  dlg.classList.toggle('wide',!!wide);
+  $('#dlgbody').innerHTML=`<h2 style="margin:0 0 10px;font-size:15px">${esc(t)}</h2>${h}`;
+  if(!dlg.open) dlg.showModal();
+}
+
+// ---- 메일 미리보기 ------------------------------------------------------
+// 저장하지 않은 지금 화면의 문구로 수집기가 메일 한 통을 만들어 돌려준다.
+// 0건 메일은 문구가 통째로 달라 따로 봐야 한다.
+async function mailPreview(empty){
+  const r=await api('/api/mailpreview',{values:S.config.values,empty:!!empty});
+  if(!r.ok){show('메일 미리보기',`<p class=vwarn>${esc(r.error)}</p>`);return;}
+  const warn=(r.warnings||[]).filter(x=>x.trim())
+    .map(x=>`<div class="msg bad">${esc(x)}</div>`).join('');
+  show('메일 미리보기',
+    `<div style="margin-bottom:12px">`
+    +`<button class="tab${empty?'':' on'}" data-mp=0>공고 3건 (A·B·C)</button> `
+    +`<button class="tab${empty?' on':''}" data-mp=1>신규 0건</button></div>`
+    +warn
+    +`<p class=dim style="margin:0 0 3px">제목</p>`
+    +`<p style="margin:0 0 14px;font-weight:600">${esc(r.subject)}</p>`
+    +`<p class=dim style="margin:0 0 3px">본문</p>`
+    +`<iframe id=mpf sandbox style="width:100%;height:50vh;background:#fff;`
+    +`border:1px solid var(--line);border-radius:8px"></iframe>`
+    +`<p class=dim style="margin:8px 0 0;font-size:13px">가짜 공고로 만든 예시입니다.`
+    +` 표에 들어가는 값은 실제 수집 결과로 바뀝니다.</p>`, true);
+  $('#mpf').srcdoc='<meta charset="utf-8"><body style="margin:12px;background:#fff">'+r.html;
+  document.querySelectorAll('[data-mp]').forEach(b=>
+    b.onclick=()=>mailPreview(b.dataset.mp==='1'));
+}
+
+// ---- 실행 탭 ------------------------------------------------------------
+let runFrom=0, runBusy=false, outTouched=false, pollTimer=null;
+
+function rmode(){return document.querySelector('input[name=rrange]:checked').value}
+function numOr(v,d){const n=parseFloat(v);return (isNaN(n)||n<=0)?d:n}
+function hoursText(v){const n=parseFloat(v);return isNaN(n)?'':`= ${Math.round(n*24)}시간`}
+
+function runArgs(mailOnly){
+  const a=[], out=$('#r_out').value.trim();
+  if(mailOnly){
+    a.push('--메일만');
+    if(out) a.push('--저장',out);
+    return a;                       // 나머지 옵션은 수집을 안 하므로 뜻이 없다
+  }
+  const m=rmode();
+  if(m==='days') a.push(String(numOr($('#r_days').value,7)));
+  if(m==='when'){
+    a.push(String(numOr($('#r_wdays').value,0.75)));
+    a.push('--기준',($('#r_when').value||'').replace('T',' '));
+  }
+  if(out) a.push('--저장',out);
+  if($('#o_list').checked) a.push('--목록만');
+  if($('#o_nopdf').checked) a.push('--pdf없이');
+  if($('#o_nomail').checked) a.push('--메일없이');
+  return a;
+}
+function runCmd(mailOnly){
+  return 'python 수집기.py '
+    + runArgs(mailOnly).map(s=>/\s/.test(s)?`"${s}"`:s).join(' ');
+}
+
+// 메일이 실제로 나가는 실행인지. 저장된 값으로 판단한다 — 수집기가 읽는 것이
+// 화면 값이 아니라 파일이기 때문이다.
+function mailNote(){
+  const V=orig.config||{};
+  if($('#o_nomail').checked) return ['info','메일은 보내지 않습니다.'];
+  if(!V['mail.enabled'])
+    return ['info','config 의 mail.enabled 가 꺼져 있어 메일은 나가지 않습니다.'];
+  if(V['mail.draft_only'])
+    return ['ok','아웃룩에 초안만 띄웁니다. 직접 눌러야 나갑니다.'];
+  const to=(V['mail.to']||[]).join(', ');
+  return ['bad','⚠ 메일이 실제로 발송됩니다 — '+(V['mail.mode']||'outlook')
+    +' · 받는 사람 '+(to||'(비어 있음)')];
+}
+
+function runRefresh(){
+  const V=orig.config||{};
+  const h=parseFloat(V.hours);
+  $('#cfghours').textContent = isNaN(h) ? '' : `(${h}시간 = ${+(h/24).toFixed(2)}일)`;
+  $('#cfgout').textContent = V.output_dir||'';
+  $('#daysh').textContent = hoursText($('#r_days').value);
+  $('#wdaysh').textContent = hoursText($('#r_wdays').value);
+  $('#cmdline').textContent = runCmd(false);
+  const [k,t]=mailNote();
+  $('#runwarn').className='msg '+k;
+  $('#runwarn').textContent=t;
+}
+
+// 기준시각을 넣으면 저장 폴더를 재현용으로 채워 둔다. 비워 둔 채 돌리면
+// 진짜 수집이력과 엑셀에 재현 결과가 섞인다.
+function autoOut(){
+  const v=$('#r_when').value;
+  if(rmode()!=='when'||!v||outTouched) return;
+  $('#r_out').value='./재현_'+v.replace(/\D/g,'').slice(0,12)
+    .replace(/^(\d{8})(\d{4})$/,'$1_$2');
+}
+
+function runBlocked(){
+  if(dirtyCount()) return '고친 설정을 먼저 저장하세요. 수집기는 저장된 파일을 읽습니다.';
+  if(rmode()==='when'&&!$('#r_when').value) return '기준시각을 넣으세요.';
+  return '';
+}
+
+async function startRun(mailOnly){
+  const b=runBlocked();
+  if(b){note(b,'bad');return;}
+  if(!mailOnly&&rmode()==='when'&&!$('#r_out').value.trim()
+     &&!confirm('저장 폴더가 비어 있습니다.\n재현 결과가 진짜 수집이력과 '
+       +'공고목록.xlsx 에 섞입니다.\n\n그래도 실행할까요?')) return;
+  const r=await api('/api/run',{args:runArgs(mailOnly)});
+  if(!r.ok){note(r.error,'bad');return;}
+  runFrom=0;
+  schedule(0);
+}
+
+// 진행 기록은 서버에 쌓이고 화면이 가져간다. 타이머는 하나만 둔다.
+function schedule(ms){clearTimeout(pollTimer);pollTimer=setTimeout(poll,ms);}
+
+async function poll(){
+  clearTimeout(pollTimer);
+  if(runBusy){schedule(300);return;}      // 겹치면 미룬다. 체인을 끊지 않는다
+  runBusy=true;
+  let r;
+  try{ r=await api('/api/runlog?from='+runFrom); }
+  catch(e){ runBusy=false; schedule(2000); return; }
+  runBusy=false;
+  if(r.lines&&r.lines.length){
+    const pre=$('#runlog');
+    if(runFrom===0) pre.textContent='';   // 안내 문구를 밀어낸다
+    const atEnd=pre.scrollTop+pre.clientHeight>=pre.scrollHeight-30;
+    pre.textContent+=r.lines.join('\n')+'\n';
+    if(atEnd) pre.scrollTop=pre.scrollHeight;
+  }
+  runFrom=r.next;
+  $('#runbtn').disabled=r.running;
+  $('#mailonlybtn').disabled=r.running;
+  $('#stopbtn').disabled=!r.running;
+  $('#runstat').textContent = !r.cmd ? ''
+    : r.running ? `실행 중… (${r.started} 시작)`
+    : r.code===0 ? `끝났습니다 (${r.started} 시작)`
+    : `끝났습니다 — 오류 코드 ${r.code}`;
+  if(r.running) schedule(700);
+}
+
+$('#runbtn').onclick=()=>startRun(false);
+$('#stopbtn').onclick=async()=>{
+  if(!confirm('실행을 중지합니다. 그때까지 받은 것은 저장되지 않습니다.'))return;
+  const r=await api('/api/runstop',{});
+  if(!r.ok) note(r.error,'bad'); else schedule(0);
+};
+$('#mailonlybtn').onclick=()=>{
+  const to=((orig.config||{})['mail.to']||[]).join(', ');
+  if(!confirm('수집을 하지 않고, 저장 폴더의 마지막 회차를 그대로 메일로 보냅니다.\n\n'
+    +'받는 사람: '+(to||'(비어 있음)')+'\n\n'
+    +'config 의 mail.enabled 가 꺼져 있어도 보냅니다. 진행할까요?')) return;
+  startRun(true);
+};
+$('#r_out').oninput=()=>{outTouched=true;runRefresh();};
+$('#r_when').onchange=()=>{autoOut();runRefresh();};
+document.querySelectorAll('#runpane input').forEach(el=>{
+  el.addEventListener('input',runRefresh);
+  // 숫자·날짜 칸을 만지면 그 줄의 라디오를 같이 켠다. 값만 고쳐 놓고
+  // 왜 안 먹히는지 헤매는 일이 없게.
+  const rd=el.closest('.rrow')?.querySelector('input[type=radio]');
+  if(rd&&el!==rd) el.addEventListener('focus',()=>{
+    if(!rd.checked){rd.checked=true;autoOut();runRefresh();}});
+});
+document.querySelectorAll('input[name=rrange]').forEach(el=>
+  el.addEventListener('change',()=>{autoOut();runRefresh();}));
 
 async function load(){
   for(const f of ['table','config']) S[f]=await api('/api/data?file='+f);
   for(const f of ['table','config']) orig[f]=clone(S[f].values);
   render();
+  poll();          // 새로고침 전에 시작한 실행이 있으면 이어서 보여준다
 }
 addEventListener('beforeunload',e=>{if(dirtyCount()){e.preventDefault();e.returnValue='';}});
 load();
@@ -943,6 +1528,9 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.startswith("/api/data"):
             which = "config" if "file=config" in self.path else "table"
             return self._send(collect(which))
+        if self.path.startswith("/api/runlog"):
+            m = re.search(r"from=(\d+)", self.path)
+            return self._send(run_log(int(m.group(1)) if m else 0))
         page = PAGE.replace("${MASK_JSON}", json.dumps(MASK, ensure_ascii=False))
         self._send(page.encode("utf-8"), "text/html")
 
@@ -961,6 +1549,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send({"dupes": dup_report(req["table"])})
             if self.path == "/api/restore":
                 return self._send(restore(req["file"]))
+            if self.path == "/api/mailpreview":
+                return self._send(mail_preview(req["values"],
+                                               bool(req.get("empty"))))
+            if self.path == "/api/run":
+                return self._send(start_run(list(req.get("args") or [])))
+            if self.path == "/api/runstop":
+                return self._send(stop_run())
         except Exception as exc:                       # noqa: BLE001
             return self._send({"ok": False, "error": f"{type(exc).__name__}: {exc}"})
         self._send({"ok": False, "error": "알 수 없는 요청"})
@@ -985,12 +1580,27 @@ def main() -> int:
     print(f"   {url}")
     print("   브라우저가 자동으로 열립니다. 닫으려면 이 창에서 Ctrl+C.")
     print("   고친 내용은 저장을 눌러야 파일에 들어갑니다.")
+    print("   '실행' 탭에서 수집기를 돌릴 수 있습니다. 이 창을 닫으면 같이 멈춥니다.")
     print("=" * 62)
     threading.Timer(0.4, lambda: webbrowser.open(url)).start()
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
         print("\n닫았습니다.")
+    finally:
+        # 돌고 있는 수집기를 두고 나가면 아무도 읽지 않는 파이프가 가득 차
+        # 그대로 멈춰 서고, 잠금 파일이 남아 다음 실행까지 막는다.
+        proc = RUN["proc"]
+        if proc is not None and proc.poll() is None:
+            print("실행 중이던 수집기를 중지합니다...")
+            RUN["stopped"] = True
+            proc.terminate()
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+            for line in clear_lock():
+                print(line)
     return 0
 
 
