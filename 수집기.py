@@ -800,6 +800,50 @@ def save_seen(path: Path, seen: set) -> None:
 # 엑셀 (실행할 때마다 아래에 줄 추가)
 # ---------------------------------------------------------------------------
 
+# 엑셀은 글꼴 후보를 못 쓴다. 이름 하나만 적을 수 있어서, 없는 PC 에서는
+# 엑셀이 알아서 비슷한 글꼴로 대신 그린다. 윈도우에 등록된 이름 그대로 적는다.
+XLS_FONT = "NICE 고딕Neo2유니 TTF 03 Rg"
+XLS_BOLD = "NICE 고딕Neo2유니 TTF 05 Sb"   # 굵은 칸(머리글·등급)에 쓴다
+XLS_SIZE = 10
+
+
+def apply_font(wb) -> None:
+    """글꼴을 따로 안 준 칸(=본문 대부분)의 기본 글꼴을 바꾼다.
+
+    통합문서가 들고 있는 글꼴 목록의 0번이 그 기본값이다. 이걸 갈아끼우면
+    이미 쌓인 줄까지 한 번에 바뀐다. openpyxl 속내를 건드리는 방법이라,
+    안 되면 저장은 그대로 하고 글꼴만 포기한다 (엑셀이 안 나가면 안 된다).
+    """
+    base = Font(name=XLS_FONT, size=XLS_SIZE)
+    try:
+        fonts = wb._fonts                        # noqa: SLF001  공개 통로가 없다
+        fonts[0] = base
+        # 0번을 바꾸면 '글꼴→번호' 색인표가 어긋난다. 다시 만들어 둔다.
+        fonts._dict = {}
+        for i, f in enumerate(fonts):
+            fonts._dict.setdefault(f, i)
+        wb._named_styles["Normal"].font = base   # 엑셀의 '표준' 서식도 맞춘다
+    except (AttributeError, IndexError, KeyError, TypeError):
+        pass
+
+
+def refit_fonts(ws) -> None:
+    """예전 파일에 남아 있는 줄의 글꼴만 새 글꼴로 맞춘다.
+
+    색·밑줄(등급 색, 링크 밑줄)은 그대로 둔다. 굵던 칸은 05 Sb 로 바꾸고
+    굵기 표시는 뗀다 — 세미볼드에 굵기를 또 걸면 두 번 굵어진다.
+    이걸 안 하면 한 파일 안에서 예전 줄과 새 줄의 서체가 갈린다.
+    """
+    for row in ws.iter_rows():
+        for cell in row:
+            f = cell.font
+            if f is None or f.name in (XLS_FONT, XLS_BOLD):
+                continue                          # 이미 바꾼 칸
+            굵음 = bool(f.bold)
+            cell.font = Font(name=XLS_BOLD if 굵음 else XLS_FONT,
+                             size=XLS_SIZE, bold=False, italic=f.italic,
+                             underline=f.underline, color=f.color)
+
 
 def open_sheet(path: Path):
     if path.exists():
@@ -807,6 +851,8 @@ def open_sheet(path: Path):
         ws = wb.active
         old = [c.value for c in ws[1]][:len(HEADERS)]
         if old == HEADERS:
+            apply_font(wb)
+            refit_fonts(ws)
             return wb, ws
         # 컬럼 구성이 바뀐 옛 파일. 그대로 이어붙이면 값이 한 칸씩 밀린다.
         wb.close()
@@ -818,11 +864,12 @@ def open_sheet(path: Path):
             log(f"[주의] 이전 엑셀을 옮기지 못했습니다: {exc}")
 
     wb = Workbook()
+    apply_font(wb)
     ws = wb.active
     ws.title = "공고목록"
     ws.append(HEADERS)
     for cell in ws[1]:
-        cell.font = Font(color="FFFFFF", bold=True)
+        cell.font = Font(name=XLS_BOLD, size=XLS_SIZE, color="FFFFFF")
         cell.fill = PatternFill("solid", fgColor="1F3864")
         cell.alignment = Alignment(horizontal="center", vertical="center")
     for i, w in enumerate(WIDTHS, start=1):
@@ -840,7 +887,8 @@ def append_rows(path: Path, rows: list[list]) -> bool:
         ws.append(row)
     for r in ws.iter_rows(min_row=start):
         g = r[0].value
-        r[0].font = Font(color=GRADE_COLOR.get(g, "000000"), bold=True)
+        r[0].font = Font(name=XLS_BOLD, size=XLS_SIZE,
+                         color=GRADE_COLOR.get(g, "000000"))
         r[0].alignment = Alignment(horizontal="center")
         # 검토 필요(C)는 수집분과 같은 파일에 섞이므로 행 전체에 색을 깐다.
         fill = GRADE_FILL.get(g)
@@ -850,7 +898,8 @@ def append_rows(path: Path, rows: list[list]) -> bool:
         if r[COL_LINK].value:
             r[COL_LINK].hyperlink = r[COL_LINK].value
             r[COL_LINK].value = "공고 열기"
-            r[COL_LINK].font = Font(color="0563C1", underline="single")
+            r[COL_LINK].font = Font(name=XLS_FONT, size=XLS_SIZE,
+                                    color="0563C1", underline="single")
     ws.auto_filter.ref = f"A1:{get_column_letter(len(HEADERS))}{ws.max_row}"
     try:
         wb.save(path)
@@ -865,7 +914,19 @@ def append_rows(path: Path, rows: list[list]) -> bool:
 # 메일 공지 — 본문에 표를 그대로 넣는다 (요구사항_v3 회신 2번)
 # ---------------------------------------------------------------------------
 
-FONT = "'맑은 고딕','Malgun Gothic',sans-serif"
+# 사내 서체. 받는 사람 PC 에 이 글꼴이 깔려 있어야 그대로 보이고,
+# 없으면 뒤의 맑은 고딕으로 자동으로 넘어간다.
+# 윈도우에 등록된 이름은 '고딕' 과 'Neo2유니' 사이가 붙어 있다(오타 아님).
+# 영문 이름(GtNeo2Uni)도 함께 적는다. 같은 글꼴을 영문으로 잡는 PC 가 있다.
+FONT = ("'NICE 고딕Neo2유니 TTF 03 Rg','NICE GtNeo2Uni TTF 03 Rg',"
+        "'맑은 고딕','Malgun Gothic',sans-serif")
+
+# 굵은 글씨는 03 Rg 를 굵게 흉내 내지 않고 05 Sb(세미볼드) 자체를 쓴다.
+# 05 Sb 에 font-weight:bold 를 또 걸면 두 번 굵어지므로, 이 글꼴을 쓰는
+# 자리에는 font-weight:normal 을 같이 적는다 (아래 BOLD 상수).
+FONT_SB = ("'NICE 고딕Neo2유니 TTF 05 Sb','NICE GtNeo2Uni TTF 05 Sb',"
+           "'맑은 고딕','Malgun Gothic',sans-serif")
+BOLD = f"font-family:{FONT_SB};font-weight:normal"
 MAIL_HEADERS = ["구분", "정확도", "등록일", "수요기관", "공고명", "마감일시",
                 "검색 키워드"]
 
@@ -993,7 +1054,7 @@ def mail_html(rows: list[list], period: str, end: datetime, root: Path,
               attached: list[Path], text: dict) -> str:
     """본문 HTML. 아웃룩이 지원하는 범위(표 + 인라인 스타일)만 쓴다."""
     th = ("padding:6px 8px;border:1px solid #d0d0d0;background:#1f3864;"
-          "color:#fff;font-weight:bold;text-align:center;white-space:nowrap")
+          f"color:#fff;{BOLD};text-align:center;white-space:nowrap")
     td = "padding:6px 8px;border:1px solid #d0d0d0;vertical-align:top"
 
     n_c = sum(1 for r in rows if r[COL_GRADE] == "C")
@@ -1008,10 +1069,12 @@ def mail_html(rows: list[list], period: str, end: datetime, root: Path,
         if not period:
             머리 = 머리.replace(" ()", "")   # 기간을 모를 때 빈 괄호가 남는다
         parts.append(f'<p style="margin:0 0 4px">{as_html(머리)}</p>')
-        parts.append(f'<p style="margin:0 0 10px;font-weight:bold">'
+        parts.append(f'<p style="margin:0 0 10px;{BOLD}">'
                      f'{as_html(fill(text, "요약", 건수=건수, 내역=내역))}</p>')
+        # 아웃룩은 표 안에서 바깥 글꼴을 물려받지 않는다. 표에도 다시 적는다.
         parts.append('<table cellspacing="0" cellpadding="0" '
-                     'style="border-collapse:collapse;font-size:12px">')
+                     f'style="border-collapse:collapse;font-size:12px;'
+                     f'font-family:{FONT}">')
         parts.append("<tr>" + "".join(
             f'<th style="{th}">{esc(h)}</th>' for h in MAIL_HEADERS) + "</tr>")
 
@@ -1029,7 +1092,7 @@ def mail_html(rows: list[list], period: str, end: datetime, root: Path,
                 f'<tr style="{bg}">'
                 f'<td style="{td};text-align:center;color:#888">{no}</td>'
                 f'<td style="{td};text-align:center;white-space:nowrap;'
-                f'color:{color};font-weight:bold">{esc(GRADE_LABEL.get(g, g))}</td>'
+                f'color:{color};{BOLD}">{esc(GRADE_LABEL.get(g, g))}</td>'
                 f'<td style="{td};white-space:nowrap">{esc(r[COL_REG])}</td>'
                 f'<td style="{td}">{esc(org)}</td>'
                 f'<td style="{td};max-width:420px">{title}</td>'
