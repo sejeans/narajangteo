@@ -42,8 +42,12 @@ TABLE_PATH = HERE / "점수표.yaml"
 BACKUP_DIR = HERE / "백업"
 VERIFY_SCRIPT = HERE / "점수표_검증.py"
 
-# 인증키·비밀번호는 화면에 그대로 띄우지 않는다.
+# SMTP 비밀번호는 화면에 그대로 띄우지 않는다. 사내 메일 계정 자격증명이다.
 # 저장할 때 이 값이 그대로 돌아오면 '고치지 않았다' 로 본다.
+#
+# data.go.kr 인증키는 가리지 않는다. 요금이 붙지 않는 무료 API 이고,
+# 어차피 config.yaml 에 평문으로 들어 있고 화면은 이 PC 에서만 열린다.
+# 가려놓으면 지금 들어있는 키가 맞는지 확인할 방법이 없어 불편하기만 했다.
 MASK = "•••••••• (그대로 둠)"
 
 
@@ -427,9 +431,10 @@ TABLE_SCHEMA = [
 CONFIG_SCHEMA = [
     {"group": "기본",
      "fields": [
-         F("service_key", "data.go.kr 인증키", "secret",
+         F("service_key", "data.go.kr 인증키", "long",
            help="Encoding / Decoding 어느 쪽을 넣어도 자동 처리합니다. "
-                "쓰는 PC마다 따로 발급받으세요 — 호출 한도가 키 단위입니다."),
+                "쓰는 PC마다 따로 발급받으세요 — 호출 한도가 키 단위입니다. "
+                "비우면 수집기가 실행되지 않습니다."),
          F("hours", "조회 기간 (시간)", "int",
            help="168 = 7일. 평일 2회·주말 휴무 일정에서는 넓게 잡아야 시간대가 비지 않습니다."),
          F("output_dir", "결과 저장 폴더", "str",
@@ -654,6 +659,7 @@ main{max-width:940px;margin:0 auto;padding:20px}
 input[type=text],input[type=number],textarea,select{width:100%;font:inherit;padding:7px 9px;
   border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg)}
 textarea{min-height:60px;resize:vertical}
+input.mono{font:13px/1.5 Consolas,monospace}
 .chips{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}
 .chip{display:inline-flex;align-items:center;gap:6px;background:var(--chip);
   border:1px solid var(--line);border-radius:14px;padding:3px 6px 3px 11px;font-size:14px}
@@ -777,6 +783,8 @@ function field(f,v){
     ctl=`<textarea data-p="${f.path}">${esc(v)}</textarea>`;
   }else if(f.type==='int'){
     ctl=`<input type=number data-p="${f.path}" value="${esc(v)}" style="max-width:140px">`;
+  }else if(f.type==='long'){
+    ctl=`<input type=text class=mono data-p="${f.path}" value="${esc(v)}" spellcheck=false>`;
   }else{
     ctl=`<input type=text data-p="${f.path}" value="${esc(v)}">`;
   }
