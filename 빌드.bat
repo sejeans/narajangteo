@@ -10,26 +10,37 @@ rem 결과인 dist\나라장터 수집기\ 폴더만 담당자에게 넘기면 된다.
 set "PY=C:\Users\user\AppData\Local\Python\pythoncore-3.14-64\python.exe"
 if not exist "%PY%" set "PY=python"
 
-echo [1/3] 빌드에 필요한 패키지를 확인합니다.
+echo [1/4] 빌드에 필요한 패키지를 확인합니다.
 "%PY%" -m pip install --quiet --upgrade pyinstaller requests pyyaml openpyxl pypdf pywin32
 if errorlevel 1 goto fail
 
 echo.
-echo [2/3] exe 로 묶습니다. 처음에는 1~2분 걸립니다.
+echo [2/4] exe 로 묶습니다. 처음에는 1~2분 걸립니다.
 "%PY%" -m PyInstaller "나라장터수집기.spec" --noconfirm
 if errorlevel 1 goto fail
 
 echo.
-echo [3/3] 배포 폴더에 실행.bat 과 설명서를 넣습니다.
+echo [3/4] 배포 폴더에 실행.bat 과 설명서를 넣습니다.
 copy /y "배포\실행.bat" "dist\나라장터 수집기\실행.bat" >nul
 if errorlevel 1 goto fail
 if exist "README.pdf" copy /y "README.pdf" "dist\나라장터 수집기\설명서.pdf" >nul
+
+echo.
+echo [4/4] 작업 폴더(build)를 지웁니다.
+rem build 안에도 같은 이름의 나라장터수집기.exe 가 들어 있다. 그런데 그것은
+rem _internal 없이 혼자 있는 껍데기라 실행하면 창만 깜빡이고 죽는다.
+rem 어느 쪽이 진짜인지 헷갈리게 두느니 통째로 지운다. 다음 빌드는 처음부터
+rem 다시 하므로 20초쯤 더 걸리지만, 엉뚱한 exe 를 넘기는 것보다 낫다.
+if exist "build" rd /s /q "build"
 
 echo.
 echo ============================================
 echo  완료했습니다.
 echo  dist\나라장터 수집기\ 폴더를 통째로 복사해 넘기세요.
 echo ============================================
+echo.
+echo 그 폴더를 지금 열어봅니다.
+start "" "dist\나라장터 수집기"
 pause
 exit /b 0
 

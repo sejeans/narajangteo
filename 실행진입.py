@@ -100,6 +100,23 @@ def 편집기() -> int:
     return mod.main()
 
 
+def 창_붙잡기() -> None:
+    """오류 메시지를 읽을 틈을 준다.
+
+    더블클릭으로 띄운 창은 프로그램이 끝나는 순간 닫힌다. 그래서 뜨자마자
+    죽으면 '검은 창이 깜빡하고 사라졌다' 로만 보이고 이유를 알 수 없다.
+
+    수집 명령에는 붙이지 않는다. 그쪽은 실행.bat 과 편집기가 부르는데,
+    작업 스케줄러 뒤에서 입력을 기다리면 작업이 '실행 중' 인 채로 영영
+    남아 다음 회차까지 막는다. 멈춰 세우는 일은 실행.bat 이 auto 인자를
+    보고 판단한다.
+    """
+    try:
+        input("\n창을 닫으려면 Enter 를 누르세요...")
+    except (EOFError, KeyboardInterrupt, OSError):
+        pass
+
+
 def main() -> int:
     argv = sys.argv[1:]
     cmd = argv[0] if argv else ""
@@ -107,7 +124,22 @@ def main() -> int:
     설정_꺼내기()
 
     if cmd in ("", "편집기"):
-        return 편집기()
+        # 더블클릭으로 들어오는 길이다. 설정 파일이 깨졌거나 포트를 잡지
+        # 못하면 여기서 죽는데, 그대로 두면 창이 닫혀 아무것도 못 읽는다.
+        try:
+            return 편집기()
+        except SystemExit as exc:
+            if isinstance(exc.code, str):
+                print(f"\n{exc.code}")
+                창_붙잡기()
+                return 1
+            raise
+        except Exception as exc:  # noqa: BLE001
+            import traceback
+            traceback.print_exc()
+            print(f"\n[오류] {type(exc).__name__}: {exc}")
+            창_붙잡기()
+            return 1
     if cmd == "수집":
         return 수집(argv[1:])
     if cmd == "점수표검증":
@@ -118,6 +150,7 @@ def main() -> int:
 
     print(f"알 수 없는 명령입니다: {cmd}\n")
     print(USAGE)
+    창_붙잡기()
     return 2
 
 
