@@ -1091,7 +1091,7 @@ dialog::backdrop{background:#0008}
       <div class=f>
         <div class=rrow>
           <label class=sw><input type=radio name=rrange value=cfg checked>
-            config 의 hours 그대로</label>
+            설정된 조회 기간 그대로</label>
           <span class=dim id=cfghours></span>
           <span class=dim>— 매일 자동 실행과 같은 조건</span>
         </div>
