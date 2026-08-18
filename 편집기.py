@@ -8,7 +8,11 @@
 주고, 저장하기 전에 공고명을 넣어 점수가 어떻게 나오는지 바로 보여준다.
 메일 문구도 저장 전에 메일 한 통을 통째로 그려서 보여준다.
 
-'실행' 탭에서 수집기를 돌릴 수 있다. 수집은 설정을 고치는 것과 성격이 달라
+화면 위쪽 메뉴는 파일이 아니라 '한 번에 손대는 것' 으로 나눈다. 기본 · 메일 ·
+키워드(조회 대상 / 대상 기관 / 점수표) · 수동 실행. 인증키를 넣으러 들어온
+사람에게 점수표를 보여줄 이유가 없다. 그래서 한 탭이 두 파일에 걸치기도 한다.
+
+'수동 실행' 탭에서 수집기를 돌릴 수 있다. 수집은 설정을 고치는 것과 성격이 달라
 (몇 분 걸리고, API 호출한도를 쓰고, 메일이 실제로 나가고, 수집이력을 바꾼다)
 저장 버튼 옆이 아니라 탭을 따로 두고 진행 기록을 그대로 보여준다.
 
@@ -390,8 +394,34 @@ def F(path, label, type="str", **kw):
     return d
 
 
+# 화면 위쪽 메뉴. 한 파일이 한 탭이 아니라, 한 번에 손대는 것끼리 묶는다.
+# 인증키를 고치러 들어온 사람과 키워드를 다듬으러 들어온 사람이 보는 화면이
+# 달라야 한다. 키워드 쪽은 항목이 많아 다시 세 갈래로 나눈다.
+TABS = [
+    {"id": "basic", "label": "기본"},
+    {"id": "mail", "label": "메일"},
+    {"id": "keyword", "label": "키워드", "subs": [
+        {"id": "targets", "label": "조회 대상"},
+        {"id": "orgs", "label": "대상 기관"},
+        {"id": "score", "label": "점수표"},
+    ]},
+    {"id": "run", "label": "수동 실행"},
+]
+
+# 낱말 조각(칩)의 색. 목록 이름을 외우지 않아도 색만 보고 이 낱말이 점수를
+# 올리는 쪽인지 깎는 쪽인지 알 수 있게 한다.
+#   up  파랑 — 점수를 올린다            dn  빨강 — 점수를 깎거나 제외한다
+#   fr  주황 — 거부권을 푼다            og  초록 — 기관 이름
+TONES = [
+    {"id": "up", "label": "점수 올림"},
+    {"id": "dn", "label": "점수 깎음 · 제외"},
+    {"id": "fr", "label": "거부권 해제"},
+    {"id": "og", "label": "기관"},
+]
+
+
 TABLE_SCHEMA = [
-    {"group": "문턱과 배점",
+    {"group": "문턱과 배점", "tab": "keyword", "sub": "score",
      "note": "공고명 점수가 이 문턱을 넘으면 수집·검토로 올라갑니다. "
              "문턱을 낮추면 무관한 공고가 늘고, 높이면 놓칩니다.",
      "fields": [
@@ -406,45 +436,47 @@ TABLE_SCHEMA = [
          F("inst_extra_bonus", "기관 보강 가점", "int",
            help="아래 inst_extra 목록에 걸리면 더하는 점수. 기본 2"),
      ]},
-    {"group": "점수를 올리는 키워드",
+    {"group": "점수를 올리는 키워드", "tab": "keyword", "sub": "score",
      "note": "공고명에 이 낱말이 있으면 점수가 올라갑니다. "
              "괄호·공백·가운뎃점은 비교 전에 지우므로 '공정가치 평가' 와 "
              "'공정가치평가' 는 같게 봅니다.",
      "fields": [
-         F("core", "core — 평가 확정어", "list", score="8점씩 (최대 3개)",
+         F("core", "core — 평가 확정어", "list", score="8점씩 (최대 3개)", tone="up",
            help="이 표현이 있으면 채권평가회사 업무로 봅니다. 아래 거부권도 무효화합니다."),
-         F("market", "market — 채권시장 제도·연구", "list", score="8점",
+         F("market", "market — 채권시장 제도·연구", "list", score="8점", tone="up",
            help="'평가' 같은 행위어가 없어도 우리 영역인 주제. "
                 "예탁결제원 장외 채권거래 건이 여기 걸립니다."),
-         F("target", "target — 평가 대상", "list", score="2점씩 (최대 2개)",
+         F("target", "target — 평가 대상", "list", score="2점씩 (최대 2개)", tone="up",
            help="모펀드·위탁운용사는 core 가 아니라 여기 둡니다. "
                 "core 에 넣으면 '운용사 선정' 공고까지 거부권이 풀립니다."),
-         F("action", "action — 평가·산출 행위", "list", score="2점씩 (최대 2개)",
+         F("action", "action — 평가·산출 행위", "list", score="2점씩 (최대 2개)", tone="up",
            help="target 과 action 이 둘 다 걸리면 +4 가 더 붙습니다."),
      ]},
     {"group": "거부권 — 우리가 뽑히는 쪽이 아닌 공고",
+     "tab": "keyword", "sub": "score",
      "note": "'위탁운용사 선정' 은 운용사를 뽑는 공고라 입찰 자체가 불가능합니다. "
              "반면 '위탁운용사 선정 정량평가 용역' 은 그 평가를 대행하는 우리 일입니다. "
              "selectee 에 걸리고 delegate 가 하나도 없으면 0점이 됩니다.",
      "fields": [
-         F("selectee", "selectee — 피선정 신호", "list", score="걸리면 0점",
+         F("selectee", "selectee — 피선정 신호", "list", score="걸리면 0점", tone="dn",
            help="단 core 나 market 이 있으면 이 규칙은 쓰지 않습니다."),
-         F("delegate", "delegate — 대행 신호 (거부권 해제)", "list", score="거부권 무효",
+         F("delegate", "delegate — 대행 신호 (거부권 해제)", "list",
+           score="거부권 무효", tone="fr",
            help="맨 '평가' 를 넣으면 안 됩니다. '신용평가회사 선정' 의 "
                 "기관 이름 속 '평가' 까지 걸려 규칙이 무력해집니다."),
      ]},
-    {"group": "점수를 깎는 키워드",
+    {"group": "점수를 깎는 키워드", "tab": "keyword", "sub": "score",
      "fields": [
-         F("kill_hard", "kill_hard — 확정 제외", "list", score="-12점씩",
+         F("kill_hard", "kill_hard — 확정 제외", "list", score="-12점씩", tone="dn",
            help="같은 '평가' 라도 우리 업무가 절대 아닌 것. 환경영향평가·회계감사 등"),
-         F("kill_soft", "kill_soft — 약한 제외", "list", score="-5점씩",
+         F("kill_soft", "kill_soft — 약한 제외", "list", score="-5점씩", tone="dn",
            help="대체로 아니지만 core 점수가 높으면 살아남습니다."),
      ]},
-    {"group": "기관 보강 · PDF 검사",
+    {"group": "기관 보강 · PDF 검사", "tab": "keyword", "sub": "score",
      "fields": [
-         F("inst_extra", "inst_extra — 기관 보강 목록", "list",
+         F("inst_extra", "inst_extra — 기관 보강 목록", "list", tone="og",
            score="위 보강 가점", help="config.yaml 의 institutions 에 없어서 놓치던 기금 운용기관"),
-         F("pdf_strong", "pdf_strong — 공고문에서 찾을 키워드", "list",
+         F("pdf_strong", "pdf_strong — 공고문에서 찾을 키워드", "list", tone="up",
            score="걸리면 무조건 수집(A)",
            help="자격요건은 여러 업종을 나열하는 형태로 쓰입니다. "
                 "3864(집합투자기구평가회사)가 같이 적힌 공고는 우리도 대상입니다."),
@@ -452,7 +484,7 @@ TABLE_SCHEMA = [
 ]
 
 CONFIG_SCHEMA = [
-    {"group": "기본",
+    {"group": "기본", "tab": "basic",
      "fields": [
          F("service_key", "data.go.kr 인증키", "long",
            help="Encoding / Decoding 어느 쪽을 넣어도 자동 처리합니다. "
@@ -464,26 +496,26 @@ CONFIG_SCHEMA = [
            help="공유폴더는 \\\\서버이름\\... 형태로. Z: 같은 드라이브 문자는 "
                 "작업 스케줄러에서 못 찾습니다."),
      ]},
-    {"group": "조회 대상",
+    {"group": "조회 대상", "tab": "keyword", "sub": "targets",
      "fields": [
          F("targets", "업무구분", "list",
            help="용역 / 물품 / 공사. ⚠ 물품·공사에는 채권평가회사가 맡을 공고가 "
                 "거의 없는 반면 조회량은 몇 배로 늘어 API 일일 호출한도를 넘길 수 "
                 "있습니다. 특별한 이유가 없으면 용역만 두세요."),
-         F("industry_codes", "무조건 수집할 업종코드", "list",
+         F("industry_codes", "무조건 수집할 업종코드", "list", tone="up",
            help="3865 = 채권평가회사"),
      ]},
-    {"group": "대상 기관",
+    {"group": "대상 기관", "tab": "keyword", "sub": "orgs",
      "note": "이름의 일부만 적으면 됩니다. '공제회' 한 줄로 군인공제회·행정공제회·"
              "교직원공제회가 모두 걸립니다. 여기 있으면 버리는 게 아니라 가점입니다.",
      "fields": [
-         F("institutions", "기관 목록 (가점)", "list",
+         F("institutions", "기관 목록 (가점)", "list", tone="og",
            help="공고기관과 수요기관을 둘 다 검사합니다."),
-         F("institutions_low_cut", "검토 문턱을 낮출 기관", "list",
+         F("institutions_low_cut", "검토 문턱을 낮출 기관", "list", tone="og",
            help="금융공공기관까지 넓히지 마세요. 4개월 14건이 77건이 되고 "
                 "대부분 무관한 공고입니다."),
      ]},
-    {"group": "메일",
+    {"group": "메일", "tab": "mail",
      "fields": [
          F("mail.enabled", "메일 발송", "bool"),
          F("mail.mode", "발송 방식", "enum", options=["outlook", "smtp"],
@@ -499,7 +531,7 @@ CONFIG_SCHEMA = [
            help="끄면 받는 쪽에서 '공고가 없었다' 와 '수집기가 죽었다' 를 "
                 "구분할 수 없습니다. 켜두는 편이 안전합니다."),
      ]},
-    {"group": "메일 문구",
+    {"group": "메일 문구", "tab": "mail",
      "note": "{중괄호} 는 보낼 때 값으로 바뀝니다. 항목마다 쓸 수 있는 이름이 "
              "다릅니다. 없는 이름을 쓰면 예외로 죽지 않고 그 줄만 조용히 기본 "
              "문구로 나가므로, 아래 경고를 그때그때 확인하세요.",
@@ -515,7 +547,7 @@ CONFIG_SCHEMA = [
          F("mail.문구.검토안내", "C가 있을 때 덧붙는 안내", "text", vars=[]),
          F("mail.문구.꼬리말", "맨 아래 작은 글씨", "str", vars=["폴더"]),
      ]},
-    {"group": "SMTP (발송 방식이 smtp 일 때만)",
+    {"group": "SMTP (발송 방식이 smtp 일 때만)", "tab": "mail",
      "fields": [
          F("mail.smtp.host", "서버 주소", "str"),
          F("mail.smtp.port", "포트", "int", help="릴레이 25 / 인증 587"),
@@ -938,9 +970,18 @@ PAGE = r"""<!doctype html>
 <title>설정 편집기</title>
 <style>
 :root{--bg:#fbfbfa;--fg:#22201d;--dim:#6b6660;--line:#e0ddd7;--card:#fff;
-      --accent:#7a5c2e;--warn:#9a3a20;--ok:#2f6b3f;--chip:#f0ede6}
+      --accent:#7a5c2e;--warn:#9a3a20;--ok:#2f6b3f;--chip:#f0ede6;
+      /* 낱말 조각 색: 파랑 올림 · 빨강 깎음 · 주황 거부권해제 · 초록 기관 */
+      --up-fg:#1b4f9c;--up-bg:#e9f1fd;--up-line:#bcd4f5;
+      --dn-fg:#a32f22;--dn-bg:#fdeceb;--dn-line:#f2c2bb;
+      --fr-fg:#8a5a12;--fr-bg:#fbf2e2;--fr-line:#e9d6ac;
+      --og-fg:#256b3d;--og-bg:#e8f5ed;--og-line:#b9dfc7}
 @media(prefers-color-scheme:dark){:root{--bg:#1a1917;--fg:#e8e4dd;--dim:#9a948b;
-  --line:#332f2a;--card:#211f1c;--accent:#c9a35f;--warn:#e0836a;--ok:#7fba8c;--chip:#2a2724}}
+  --line:#332f2a;--card:#211f1c;--accent:#c9a35f;--warn:#e0836a;--ok:#7fba8c;--chip:#2a2724;
+  --up-fg:#93b9f2;--up-bg:#17243a;--up-line:#2d4674;
+  --dn-fg:#f0968a;--dn-bg:#331a19;--dn-line:#6b3230;
+  --fr-fg:#e0b96a;--fr-bg:#32281a;--fr-line:#5f4a26;
+  --og-fg:#86c79b;--og-bg:#18291f;--og-line:#2f5a3d}}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.6 "Malgun Gothic",system-ui,sans-serif}
 header{position:sticky;top:0;z-index:9;background:var(--bg);border-bottom:1px solid var(--line);
@@ -954,6 +995,10 @@ button:disabled{opacity:.45;cursor:default}
 .tabs{display:flex;gap:6px;margin-right:auto}
 .tab.on{background:var(--chip);border-color:var(--accent);font-weight:700}
 main{max-width:940px;margin:0 auto;padding:20px}
+.subs{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 16px}
+.subs button{border-radius:16px;padding:5px 14px}
+.subs button.on{background:var(--chip);border-color:var(--accent);font-weight:700}
+.subs:empty{display:none}
 .grp{background:var(--card);border:1px solid var(--line);border-radius:10px;
   padding:16px 18px;margin-bottom:16px}
 .grp>h2{font-size:14px;margin:0 0 4px}
@@ -972,9 +1017,23 @@ input.mono{font:13px/1.5 Consolas,monospace}
 .chips{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}
 .chip{display:inline-flex;align-items:center;gap:6px;background:var(--chip);
   border:1px solid var(--line);border-radius:14px;padding:3px 6px 3px 11px;font-size:14px}
-.chip button{border:0;background:none;padding:0 4px;color:var(--dim);font-size:15px;line-height:1}
-.chip button:hover{color:var(--warn)}
-.chip.new{border-color:var(--accent)}
+.chip button{border:0;background:none;padding:0 4px;color:inherit;opacity:.55;
+  font-size:15px;line-height:1}
+.chip button:hover{opacity:1;color:var(--warn)}
+/* 이번에 넣은 낱말. 색은 목록의 성격을 나타내므로 여기서 바꾸지 않고 점선으로만. */
+.chip.new{border-style:dashed;font-weight:600}
+
+/* 목록의 성격을 색으로. 칩·배지·범례가 같은 규칙을 쓴다.
+   .score 와 .chip 뒤에 와야 배경색이 덮인다. */
+.t-up{--tfg:var(--up-fg);--tbg:var(--up-bg);--tln:var(--up-line)}
+.t-dn{--tfg:var(--dn-fg);--tbg:var(--dn-bg);--tln:var(--dn-line)}
+.t-fr{--tfg:var(--fr-fg);--tbg:var(--fr-bg);--tln:var(--fr-line)}
+.t-og{--tfg:var(--og-fg);--tbg:var(--og-bg);--tln:var(--og-line)}
+.t-up,.t-dn,.t-fr,.t-og{background:var(--tbg);border-color:var(--tln);color:var(--tfg)}
+/* 색·테두리는 .t-* 가 준다. 여기서 border 나 color 를 쓰면 선택자가 더 세서
+   범례만 회색으로 나온다. */
+.legend{display:flex;gap:7px;flex-wrap:wrap;margin:0 0 16px;font-size:13px}
+.legend span{border-width:1px;border-style:solid;border-radius:14px;padding:2px 11px}
 .row{display:flex;gap:8px}
 .row input{flex:1}
 label.sw{display:flex;gap:8px;align-items:center;cursor:pointer}
@@ -1011,11 +1070,7 @@ dialog::backdrop{background:#0008}
 
 <header>
   <h1>설정 편집기</h1>
-  <div class=tabs>
-    <button class="tab on" data-f=table>점수표.yaml</button>
-    <button class=tab data-f=config>config.yaml</button>
-    <button class=tab data-f=run>실행</button>
-  </div>
+  <div class=tabs id=tabs></div>
   <span id=dirty class=dim></span>
   <button id=dupbtn>중복 검사</button>
   <button id=verbtn>검증 실행</button>
@@ -1025,6 +1080,7 @@ dialog::backdrop{background:#0008}
 
 <main>
   <div id=msg></div>
+  <div class=subs id=subs></div>
   <div id=body></div>
 
   <div id=runpane style="display:none">
@@ -1113,8 +1169,17 @@ dialog::backdrop{background:#0008}
 </dialog>
 
 <script>
-let S={}, cur='table', orig={}, FMAP={};
+const TABS=${TABS_JSON}, TONES=${TONES_JSON};
+// cur 는 지금 보고 있는 탭. SUB 는 탭마다 마지막으로 본 하위 메뉴를 기억해
+// 탭을 오갈 때 처음으로 되돌아가지 않게 한다.
+let S={}, cur=TABS[0].id, SUB={}, orig={}, FMAP={};
 const $=s=>document.querySelector(s);
+const tabOf=id=>TABS.find(t=>t.id===id);
+function subNow(){
+  const t=tabOf(cur);
+  if(!t||!t.subs) return null;
+  return SUB[cur]||(SUB[cur]=t.subs[0].id);
+}
 
 async function api(p,b){
   const r=await fetch(p,{method:b?'POST':'GET',headers:{'Content-Type':'application/json'},
@@ -1122,43 +1187,76 @@ async function api(p,b){
   return r.json();
 }
 function clone(o){return JSON.parse(JSON.stringify(o))}
-function dirtyCount(){
-  let n=0;
-  for(const f in S) if(JSON.stringify(S[f].values)!==JSON.stringify(orig[f])) n++;
-  return n;
+function dirtyFiles(){
+  return ['config','table'].filter(f=>
+    S[f]&&JSON.stringify(S[f].values)!==JSON.stringify(orig[f]));
 }
+function dirtyCount(){return dirtyFiles().length}
 function markDirty(){
-  const n=dirtyCount();
-  $('#dirty').textContent=n?`고친 파일 ${n}개`:'';
-  $('#savebtn').disabled=!n;
+  const d=dirtyFiles();
+  $('#dirty').textContent=d.length?'고친 곳: '+d.map(f=>S[f].name).join(' · '):'';
+  $('#savebtn').disabled=!d.length;
   if(cur==='run') runRefresh();
-  return n;
+  return d.length;
+}
+
+// 지금 탭(과 하위 메뉴)에 속한 그룹을 두 파일에서 모아 온다. 화면의 묶음은
+// 파일 경계와 다르다 — '키워드' 에는 config 와 점수표가 같이 들어 있다.
+function groupsNow(){
+  const s=subNow(), out=[];
+  for(const file of ['config','table'])
+    for(const g of (S[file]?S[file].schema:[]))
+      if(g.tab===cur && (!s || g.sub===s)) out.push([file,g]);
+  return out;
 }
 
 function render(){
-  document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('on',b.dataset.f===cur));
-  const isRun = cur==='run';
-  $('#test').style.display = cur==='table' ? '' : 'none';
+  $('#tabs').innerHTML=TABS.map(t=>
+    `<button class="tab${t.id===cur?' on':''}" data-t="${esc(t.id)}">`
+    +`${esc(t.label)}</button>`).join('');
+  document.querySelectorAll('[data-t]').forEach(b=>
+    b.onclick=()=>{cur=b.dataset.t;render();});
+
+  const t=tabOf(cur), s=subNow(), isRun=cur==='run';
+  $('#subs').innerHTML=(t.subs||[]).map(x=>
+    `<button class="${x.id===s?'on':''}" data-s="${esc(x.id)}">${esc(x.label)}</button>`
+    ).join('');
+  document.querySelectorAll('[data-s]').forEach(b=>
+    b.onclick=()=>{SUB[cur]=b.dataset.s;render();});
+
+  // 점수 시험 칸은 점수표·기관 화면에서만. 조회 대상에는 점수가 걸리지 않는다.
+  $('#test').style.display = (cur==='keyword'&&s!=='targets') ? '' : 'none';
   $('#body').style.display = isRun ? 'none' : '';
   $('#runpane').style.display = isRun ? '' : 'none';
-  // 실행 탭에서는 점수표용 버튼과 되돌리기가 가리킬 대상이 없다.
-  for(const id of ['#dupbtn','#verbtn','#undobtn'])
-    $(id).style.display = isRun ? 'none' : '';
+  // 중복 검사와 검증은 점수표 이야기라 키워드 탭에서만 뜻이 있다.
+  for(const id of ['#dupbtn','#verbtn']) $(id).style.display = cur==='keyword'?'':'none';
+  $('#undobtn').style.display = isRun ? 'none' : '';
   if(isRun){ markDirty(); return; }
 
-  const V=S[cur].values, out=[];
+  const out=[];
   FMAP={};
-  for(const g of S[cur].schema){
+  // 범례는 이 화면에 실제로 나오는 색만. 안 쓰는 색까지 늘어놓으면
+  // 어느 것이 지금 보고 있는 목록의 색인지 되레 헷갈린다.
+  const here=groupsNow();
+  const tones=TONES.filter(x=>
+    here.some(([,g])=>g.fields.some(f=>f.tone===x.id)));
+  if(tones.length) out.push(`<div class=legend>`+tones.map(x=>
+    `<span class="t-${esc(x.id)}">${esc(x.label)}</span>`).join('')+`</div>`);
+  for(const [file,g] of here){
     out.push(`<div class=grp><h2>${esc(g.group)}</h2>`);
     if(g.note) out.push(`<p class=note>${esc(g.note)}</p>`);
-    for(const f of g.fields){ FMAP[f.path]=f; out.push(field(f,V[f.path])); }
+    for(const f of g.fields){
+      FMAP[f.path]={...f,file};
+      out.push(field(file,f,S[file].values[f.path]));
+    }
     if(g.action) out.push(`<div class=f><button id="${esc(g.action.id)}">`
       +`${esc(g.action.label)}</button></div>`);
     out.push(`</div>`);
   }
   $('#body').innerHTML=out.join('');
   bind();
-  for(const p in FMAP) if(FMAP[p].vars) checkVars(FMAP[p], V[p]);
+  for(const p in FMAP)
+    if(FMAP[p].vars) checkVars(FMAP[p], S[FMAP[p].file].values[p]);
   markDirty();
 }
 
@@ -1186,10 +1284,11 @@ function checkVars(f,v){
 
 function esc(s){return String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
 
-function field(f,v){
-  const was=orig[cur][f.path];
+function field(file,f,v){
+  const was=orig[file][f.path];
+  const tone=f.tone?' t-'+f.tone:'';
   const head=`<div class=lab><b>${esc(f.label)}</b>`
-    +(f.score?`<span class=score>${esc(f.score)}</span>`:'')
+    +(f.score?`<span class="score${tone}">${esc(f.score)}</span>`:'')
     +(f.type==='list'?`<span class=cnt>${v.length}개</span>`:'')
     +`</div>`+(f.help?`<p class=help>${esc(f.help)}</p>`:'')
     +(f.vars?`<p class=help>쓸 수 있는 값: `
@@ -1200,7 +1299,8 @@ function field(f,v){
   if(f.type==='list'){
     const chips=v.map((w,i)=>{
       const isNew=!(was||[]).includes(w);
-      return `<span class="chip${isNew?' new':''}"><span>${esc(w)}</span>`
+      return `<span class="chip${tone}${isNew?' new':''}"`
+        +(isNew?' title="아직 저장하지 않은 낱말"':'')+`><span>${esc(w)}</span>`
         +`<button data-del="${f.path}" data-i="${i}" title="지우기">×</button></span>`;
     }).join('');
     ctl=`<div class=chips>${chips||'<span class=dim>비어 있음</span>'}</div>`
@@ -1226,10 +1326,10 @@ function field(f,v){
 function bind(){
   document.querySelectorAll('[data-p]').forEach(el=>{
     el.oninput=()=>{
-      const p=el.dataset.p;
-      if(el.type==='checkbox') S[cur].values[p]=el.checked;
-      else if(el.type==='number'){const n=parseInt(el.value,10);S[cur].values[p]=isNaN(n)?0:n;}
-      else S[cur].values[p]=el.value;
+      const p=el.dataset.p, V=S[FMAP[p].file].values;
+      if(el.type==='checkbox') V[p]=el.checked;
+      else if(el.type==='number'){const n=parseInt(el.value,10);V[p]=isNaN(n)?0:n;}
+      else V[p]=el.value;
       if(el.type==='checkbox'){el.parentNode.lastChild.textContent=' '+(el.checked?'켜짐':'꺼짐');}
       if(FMAP[p]&&FMAP[p].vars) checkVars(FMAP[p],el.value);
       markDirty();
@@ -1237,7 +1337,11 @@ function bind(){
   });
   const mp=$('#mailprev'); if(mp) mp.onclick=()=>mailPreview(false);
   document.querySelectorAll('[data-del]').forEach(b=>{
-    b.onclick=()=>{S[cur].values[b.dataset.del].splice(+b.dataset.i,1);render();};
+    b.onclick=()=>{
+      const p=b.dataset.del;
+      S[FMAP[p].file].values[p].splice(+b.dataset.i,1);
+      render();
+    };
   });
   document.querySelectorAll('[data-add]').forEach(inp=>{
     inp.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();addWords(inp);}};
@@ -1248,7 +1352,7 @@ function bind(){
 }
 
 function addWords(inp){
-  const p=inp.dataset.add, list=S[cur].values[p];
+  const p=inp.dataset.add, list=S[FMAP[p].file].values[p];
   const words=inp.value.split(',').map(s=>s.trim()).filter(Boolean);
   let added=0;
   for(const w of words) if(!list.includes(w)){list.push(w);added++;}
@@ -1259,8 +1363,6 @@ function addWords(inp){
 
 function note(t,k){$('#msg').innerHTML=`<div class="msg ${k||'ok'}">${esc(t)}</div>`;
   if(k!=='bad')setTimeout(()=>{if($('#msg').textContent===t)$('#msg').innerHTML='';},6000);}
-
-document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{cur=b.dataset.f;render();});
 
 $('#savebtn').onclick=async()=>{
   $('#savebtn').disabled=true;
@@ -1298,11 +1400,24 @@ $('#dupbtn').onclick=async()=>{
        :'<p>겹치는 낱말이 없습니다.</p>');
 };
 
-$('#undobtn').onclick=async()=>{
-  if(!confirm(`${S[cur].name} 을 가장 최근 백업으로 되돌립니다. 지금 화면의 수정은 사라집니다.`))return;
-  const r=await api('/api/restore',{file:cur});
-  note(r.message,r.ok?'ok':'bad');
-  if(r.ok) await load();
+// 화면의 탭이 파일 하나에 대응하지 않으므로(키워드 탭은 두 파일을 같이 보여준다)
+// 어느 파일을 되돌릴지 여기서 고르게 한다.
+$('#undobtn').onclick=()=>{
+  show('가장 최근 백업으로 되돌리기',
+    `<p class=dim>백업/ 폴더에 있는 가장 최근 파일로 되돌립니다. `
+    +`지금 화면에서 고쳐 둔 것은 사라집니다.</p>`
+    +['config','table'].map(f=>`<button data-undo="${f}" style="margin-right:8px">`
+      +`${esc(S[f].name)} 되돌리기</button>`).join('')
+    +`<p class=dim style="margin-top:12px">config.yaml — 기본 · 메일 · 조회 대상 · `
+    +`대상 기관 &nbsp; / &nbsp; 점수표.yaml — 키워드 탭의 점수표</p>`);
+  document.querySelectorAll('[data-undo]').forEach(b=>b.onclick=async()=>{
+    const f=b.dataset.undo;
+    if(!confirm(`${S[f].name} 을 가장 최근 백업으로 되돌립니다. 계속할까요?`))return;
+    const r=await api('/api/restore',{file:f});
+    dlg.close();
+    note(r.message,r.ok?'ok':'bad');
+    if(r.ok) await load();
+  });
 };
 
 function tableData(){
@@ -1550,7 +1665,11 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.startswith("/api/runlog"):
             m = re.search(r"from=(\d+)", self.path)
             return self._send(run_log(int(m.group(1)) if m else 0))
-        page = PAGE.replace("${MASK_JSON}", json.dumps(MASK, ensure_ascii=False))
+        page = PAGE
+        for name, value in (("MASK_JSON", MASK), ("TABS_JSON", TABS),
+                            ("TONES_JSON", TONES)):
+            page = page.replace("${" + name + "}",
+                                json.dumps(value, ensure_ascii=False))
         self._send(page.encode("utf-8"), "text/html")
 
     def do_POST(self):
@@ -1601,7 +1720,7 @@ def main() -> int:
     print(f"   {url}")
     print("   브라우저가 자동으로 열립니다. 닫으려면 이 창에서 Ctrl+C.")
     print("   고친 내용은 저장을 눌러야 파일에 들어갑니다.")
-    print("   '실행' 탭에서 수집기를 돌릴 수 있습니다. 이 창을 닫으면 같이 멈춥니다.")
+    print("   '수동 실행' 탭에서 수집기를 돌릴 수 있습니다. 이 창을 닫으면 같이 멈춥니다.")
     print("=" * 62)
     threading.Timer(0.4, lambda: webbrowser.open(url)).start()
     try:
