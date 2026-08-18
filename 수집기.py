@@ -61,24 +61,16 @@ except ImportError:
     HAS_PDF = False
 
 
-def app_dir() -> Path:
-    """설정과 결과가 놓이는 기준 폴더.
-
-    exe 로 묶었을 때 __file__ 은 임시 압축해제 폴더를 가리키므로
-    실행 파일이 놓인 위치를 대신 써야 한다.
-    """
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent
-    return Path(__file__).resolve().parent
-
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from 앱경로 import FROZEN, app_dir  # noqa: E402
 
 HERE = app_dir()
-sys.path.insert(0, str(HERE))
+if not FROZEN:
+    sys.path.insert(0, str(HERE))
 from 점수 import Scorer  # noqa: E402
 
 KST = timezone(timedelta(hours=9))
 CONFIG_PATH = HERE / "config.yaml"
-FROZEN = getattr(sys, "frozen", False)
 
 BASE = "https://apis.data.go.kr/1230000/ad/BidPublicInfoService"
 ENDPOINTS = {
@@ -166,8 +158,16 @@ LOG_MAX_BYTES = 2_000_000   # 넘으면 실행.log.1 로 밀어내고 새로 쓴
 
 # 수집기를 직접 실행할 때만 기록한다.
 # 진단·실측 스크립트가 import 해서 쓰는 경우까지 남기면 로그가 지저분해진다.
+# exe 로 묶으면 진입점이 실행진입.py 라 __name__ 이 "__main__" 이 아니다.
+# 그쪽에서 enable_log() 를 불러 준다.
 _LOG_ENABLED = __name__ == "__main__"
 _LOG_FILE = None
+
+
+def enable_log() -> None:
+    """실행 기록을 남기게 한다. 수집을 진짜로 돌리는 진입점만 부른다."""
+    global _LOG_ENABLED
+    _LOG_ENABLED = True
 
 
 def _log_file():
@@ -1203,7 +1203,11 @@ def send_via_outlook(cfg: dict, subject: str, html: str,
     try:
         import win32com.client  # type: ignore
     except ImportError:
-        log("  [실패] 아웃룩 발송에는 pywin32 가 필요합니다:  pip install pywin32")
+        # exe 배포판에는 pywin32 가 이미 들어 있다. 여기까지 왔다면 번들이
+        # 깨진 것이므로 설치하라고 안내해봐야 도움이 안 된다.
+        log("  [실패] 아웃룩 발송에는 pywin32 가 필요합니다:  " +
+            ("배포 폴더가 손상됐습니다. 다시 받으세요" if FROZEN
+             else "pip install pywin32"))
         return False
 
     m = cfg["mail"]
@@ -1493,10 +1497,14 @@ def main() -> int:
         try:
             hours = int(float(args[0]) * 24)
         except ValueError:
-            sys.exit("일수는 숫자로 입력하세요. 예: python 수집기.py 30")
+            예 = ("나라장터수집기.exe 수집 30" if FROZEN
+                 else "python 수집기.py 30")
+            sys.exit(f"일수는 숫자로 입력하세요. 예: {예}")
 
     if use_pdf and not HAS_PDF:
-        log("[안내] PDF 검사를 하려면 pypdf 가 필요합니다:  pip install pypdf")
+        log("[안내] PDF 검사를 하려면 pypdf 가 필요합니다:  " +
+            ("배포 폴더가 손상됐습니다. 다시 받으세요" if FROZEN
+             else "pip install pypdf"))
         log("       면허제한 + 공고명 점수만으로 진행합니다.\n")
         use_pdf = False
 
@@ -1650,7 +1658,8 @@ def run(cfg: dict, sc: Scorer, root: Path, begin: datetime, end: datetime,
 
     if not 결과:
         log("\n조건에 맞는 공고가 없습니다.")
-        log("점수표를 확인하려면:  python 점수표_검증.py")
+        log("점수표를 확인하려면:  " + ("편집기의 '점수표' 탭에서 검증 버튼" if FROZEN
+                                  else "python 점수표_검증.py"))
     return 0
 
 
@@ -1666,9 +1675,4 @@ if __name__ == "__main__":
         code = 0 if exc.code in (0, None) else 1
     except Exception as exc:  # noqa: BLE001
         log(f"\n[예기치 못한 오류] {type(exc).__name__}: {exc}")
-    if FROZEN and "--quiet" not in sys.argv:
-        try:
-            input("\n창을 닫으려면 Enter를 누르세요...")
-        except EOFError:
-            pass
     raise SystemExit(code)

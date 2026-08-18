@@ -40,14 +40,30 @@ try:
 except ImportError:
     sys.exit("필요한 패키지를 설치하세요:\n\n    pip install pyyaml\n")
 
-HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from 앱경로 import FROZEN, app_dir  # noqa: E402
+
+HERE = app_dir()
+if not FROZEN:
+    sys.path.insert(0, str(HERE))
 
 CONFIG_PATH = HERE / "config.yaml"
 TABLE_PATH = HERE / "점수표.yaml"
 BACKUP_DIR = HERE / "백업"
 VERIFY_SCRIPT = HERE / "점수표_검증.py"
 COLLECTOR = HERE / "수집기.py"
+
+
+def child(sub: str, args: list | None = None) -> list:
+    """수집기·검증기를 따로 띄울 때 쓸 명령줄.
+
+    exe 로 묶으면 sys.executable 이 이 exe 자신이므로 서브커맨드만 붙이면
+    된다. .py 로 돌 때는 파이썬에 스크립트 경로를 넘긴다.
+    """
+    if FROZEN:
+        return [sys.executable, sub, *(args or [])]
+    script = COLLECTOR if sub == "수집" else VERIFY_SCRIPT
+    return [sys.executable, str(script), *(args or [])]
 
 # SMTP 비밀번호는 화면에 그대로 띄우지 않는다. 사내 메일 계정 자격증명이다.
 # 저장할 때 이 값이 그대로 돌아오면 '고치지 않았다' 로 본다.
@@ -610,10 +626,10 @@ def score_preview(title: str, org: str, table: dict, config: dict) -> dict:
 
 def run_verify() -> dict:
     """점수표_검증.py 를 돌린다. 저장된 파일을 읽으므로 저장 뒤에 의미가 있다."""
-    if not VERIFY_SCRIPT.exists():
+    if not FROZEN and not VERIFY_SCRIPT.exists():
         return {"ok": False, "output": "점수표_검증.py 가 없습니다."}
     env = {**os.environ, "PYTHONUTF8": "1"}
-    p = subprocess.run([sys.executable, str(VERIFY_SCRIPT)], cwd=str(HERE),
+    p = subprocess.run(child("점수표검증"), cwd=str(HERE),
                        capture_output=True, env=env)
     out = (p.stdout + p.stderr).decode("utf-8", "replace")
     return {"ok": p.returncode == 0, "output": out}
@@ -857,7 +873,7 @@ def pump(proc) -> None:
 
 
 def start_run(args: list) -> dict:
-    if not COLLECTOR.exists():
+    if not FROZEN and not COLLECTOR.exists():
         return {"ok": False, "error": "수집기.py 가 없습니다."}
     bad = check_args(args)
     if bad:
@@ -873,14 +889,17 @@ def start_run(args: list) -> dict:
     env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
     try:
-        proc = subprocess.Popen([sys.executable, str(COLLECTOR), *args],
+        proc = subprocess.Popen(child("수집", args),
                                 cwd=str(HERE), env=env, stdin=subprocess.DEVNULL,
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 creationflags=flags)
     except OSError as exc:
         return {"ok": False, "error": f"실행하지 못했습니다: {exc}"}
 
-    cmd = "python 수집기.py " + " ".join(
+    # 화면에 보여줄 명령줄. 손으로 다시 칠 수 있어야 하므로 실제로 돈 것과
+    # 같은 모양이어야 한다. exe 배포판에는 파이썬이 없다.
+    앞 = "나라장터수집기.exe 수집 " if FROZEN else "python 수집기.py "
+    cmd = 앞 + " ".join(
         f'"{a}"' if " " in a else a for a in args)
     with RUN_LOCK:
         RUN.update(proc=proc, lines=[f"$ {cmd}", ""], dropped=0, code=None,
@@ -1568,6 +1587,8 @@ def free_port() -> int:
 
 
 def main() -> int:
+    # exe 로 묶었을 때 설정 파일을 exe 옆으로 꺼내는 일은 실행진입.py 가 한다.
+    # 어느 명령으로 들어오든 필요해서 진입점 한 군데로 모아 두었다.
     for p in (CONFIG_PATH, TABLE_PATH):
         if not p.exists():
             sys.exit(f"{p.name} 이 없습니다. 수집기와 같은 폴더에서 실행하세요.")

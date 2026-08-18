@@ -19,9 +19,10 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from 앱경로 import app_dir  # noqa: E402
 from 점수 import Scorer  # noqa: E402
 
-HERE = Path(__file__).resolve().parent
+HERE = app_dir()
 
 # --------------------------------------------------------------------------
 # 1. 검증용_공고목록.md 의 8건 — 이건 반드시 잡혀야 한다

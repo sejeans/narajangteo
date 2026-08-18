@@ -20,7 +20,12 @@ try:
 except ImportError:
     sys.exit("필요한 패키지를 설치하세요:\n\n    pip install pyyaml\n")
 
-HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from 앱경로 import app_dir  # noqa: E402
+
+# exe 로 묶으면 __file__ 은 번들 안을 가리킨다. 점수표는 담당자가 편집기로
+# 고치는 파일이라 반드시 exe 옆의 것을 읽어야 한다.
+HERE = app_dir()
 TABLE_PATH = HERE / "점수표.yaml"
 CONFIG_PATH = HERE / "config.yaml"
 
