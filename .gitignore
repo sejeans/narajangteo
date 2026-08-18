@@ -18,6 +18,7 @@
 !.gitignore
 !.gitattributes
 !README.md
+!개발.md
 !config.example.yaml
 
 !수집기.py
