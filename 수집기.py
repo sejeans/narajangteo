@@ -92,25 +92,32 @@ OLD_REVIEW_XLSX = "검토후보.xlsx"   # 한 파일로 합치기 전에 쓰던 
 SEEN_NAME = "_수집이력.json"
 PDF_DIR = "공고문"
 
-HEADERS = ["정확도", "등록일", "수요기관", "공고기관", "공고명", "마감일시",
-           "업무", "점수", "키워드", "근거", "첨부", "공고번호", "링크", "수집일시"]
-# '등급' 을 '정확도' 로 바꾸고 S 등급을 A 로 합치기 전에 쓰던 구성.
-# --메일만 이 예전 파일도 읽을 수 있어야 한다.
-OLD_HEADERS = ["등급"] + HEADERS[1:]
+HEADERS = ["정확도", "공고종류", "등록일", "수요기관", "공고기관", "공고명",
+           "마감일시", "배정예산", "추정가격", "업무", "점수", "키워드", "근거",
+           "첨부", "공고번호", "링크", "수집일시"]
 OLD_GRADE = {"S": "A"}
-WIDTHS = [6, 12, 24, 24, 58, 17, 6, 6, 16, 40, 6, 18, 12, 17]
+WIDTHS = [6, 8, 12, 24, 24, 58, 17, 14, 14, 6, 6, 16, 40, 6, 18, 12, 17]
 COL_GRADE = 0
-COL_REG = 1              # 등록일
-COL_DM = 2               # 수요기관
-COL_NT = 3               # 공고기관
-COL_TITLE = 4
-COL_DUE = 5              # 마감일시
-COL_SCORE = 7
-COL_KW = 8               # 키워드
-COL_WHY = 9              # 근거
-COL_NO = 11              # 공고번호
-COL_LINK = 12            # 링크 (하이퍼링크로 바꾸는 칸)
-COL_STAMP = 13           # 수집일시 (한 회차는 값이 모두 같다)
+COL_KIND = 1             # 공고종류 (신규/변경/재공고)
+COL_REG = 2              # 등록일
+COL_DM = 3               # 수요기관
+COL_NT = 4               # 공고기관
+COL_TITLE = 5
+COL_DUE = 6              # 마감일시
+COL_BUDGET = 7           # 배정예산 (부가세 포함)
+COL_PRICE = 8            # 추정가격 (부가세 제외)
+COL_SCORE = 10
+COL_KW = 11              # 키워드
+COL_WHY = 12             # 근거
+COL_NO = 14              # 공고번호
+COL_LINK = 15            # 링크 (하이퍼링크로 바꾸는 칸)
+COL_STAMP = 16           # 수집일시 (한 회차는 값이 모두 같다)
+
+# 컬럼 구성은 몇 번 바뀌었고 앞으로도 바뀐다. --메일만 은 그 전에 쌓아둔
+# 엑셀도 읽을 수 있어야 해서, 자리(몇 번째 칸)가 아니라 첫 줄에 적힌 이름을
+# 보고 지금 구성의 어느 칸인지 찾는다 (read_saved_rows 참고).
+# 이름이 바뀐 칸만 여기 적어둔다.  옛이름 → 지금이름
+RENAMED = {"등급": "정확도"}
 
 # 정확도 3단계. A 는 근거가 두 가지(면허제한 / 공고문)지만 결론이 같아 합쳤다.
 GRADE_DESC = {
@@ -143,6 +150,14 @@ GRADE_COLOR = {"A": "C00000", "B": "1F3864", "C": "808080"}
 GRADE_ORDER = {"A": 0, "B": 1, "C": 2}
 # C(검토 필요)는 같은 파일에 들어가므로 행 전체를 연회색으로 깔아 구분한다.
 GRADE_FILL = {"C": "F2F2F2"}
+
+# 공고종류. 왼쪽이 API 의 ntceKindNm 원문, 오른쪽이 엑셀·메일에 적는 말이다.
+# 취소공고는 지금 조회 단계에서 버리므로(pick_live) 엑셀까지 오지 않지만,
+# 나중에 취소도 알리기로 하면 쓸 자리라 미리 적어둔다.
+NOTICE_KIND = {"등록공고": "신규", "변경공고": "변경",
+               "재공고": "재공고", "취소공고": "취소"}
+# 신규가 대부분이라 그대로 두면 눈에 안 띈다. 변경·재공고만 색을 준다.
+KIND_COLOR = {"변경": "#C00000", "재공고": "#BF8F00"}
 
 BAD_CHARS = re.compile(r'[\\/:*?"<>|\r\n\t]')
 MAX_PATH = 250           # 윈도우 260자 제한에서 여유분을 뺀 값
@@ -561,6 +576,35 @@ def deadline(raw: dict) -> str:
     return f"{opng[:16]} (개찰)" if opng else ""
 
 
+def notice_kind(raw: dict) -> str:
+    """공고종류. API 의 ntceKindNm 을 화면에서 쓰는 말로 바꾼다.
+
+    8/12~8/18 용역 1,500건을 세어보니 등록공고 1,054 · 재공고 285 ·
+    변경공고 87 · 취소공고 74 였다. 즉 신규인지 변경인지 재공고인지는
+    지난 수집분과 대조할 것 없이 API 가 그냥 알려준다.
+
+    다만 지금은 수집이력에 있는 공고번호를 건너뛰므로(run 참고), 여기 '변경'
+    으로 찍히는 건은 '우리가 처음 보는데 이미 한 번 바뀐 공고' 다.
+    이미 보낸 공고가 나중에 바뀐 것을 잡으려면 이력에 값을 남겨야 한다.
+    """
+    return NOTICE_KIND.get((raw.get("ntceKindNm") or "").strip(), "-")
+
+
+def money(raw) -> int | str:
+    """예산 칸. 숫자로 넣어야 엑셀에서 정렬·합계가 된다.
+
+    1,500건 중 6건은 금액이 비어 있거나 0 이었다. 그때는 0 을 넣지 않고
+    빈칸으로 둔다. 0 을 넣으면 '예산 0원짜리 공고' 로 읽힌다.
+    """
+    text = str(raw or "").strip().replace(",", "")
+    if not text or text == "0":
+        return ""
+    try:
+        return int(float(text))
+    except ValueError:
+        return ""
+
+
 def notice_ord(raw: dict) -> int:
     try:
         return int(str(raw.get("bidNtceOrd") or "0").strip() or 0)
@@ -895,6 +939,9 @@ def append_rows(path: Path, rows: list[list]) -> bool:
         if fill:
             for cell in r:
                 cell.fill = PatternFill("solid", fgColor=fill)
+        for cell in (r[COL_BUDGET], r[COL_PRICE]):
+            cell.number_format = "#,##0"
+            cell.alignment = Alignment(horizontal="right")
         if r[COL_LINK].value:
             r[COL_LINK].hyperlink = r[COL_LINK].value
             r[COL_LINK].value = "공고 열기"
@@ -927,8 +974,12 @@ FONT = ("'NICE 고딕Neo2유니 TTF 03 Rg','NICE GtNeo2Uni TTF 03 Rg',"
 FONT_SB = ("'NICE 고딕Neo2유니 TTF 05 Sb','NICE GtNeo2Uni TTF 05 Sb',"
            "'맑은 고딕','Malgun Gothic',sans-serif")
 BOLD = f"font-family:{FONT_SB};font-weight:normal"
-MAIL_HEADERS = ["구분", "정확도", "등록일", "수요기관", "공고명", "마감일시",
-                "검색 키워드"]
+MAIL_HEADERS = ["구분", "정확도", "공고종류", "등록일", "수요기관", "공고명",
+                "마감일시", "사업예산", "검색 키워드"]
+
+# 메일의 '사업예산' 은 배정예산금액(asignBdgtAmt)입니다. 부가세를 포함한,
+# 발주기관이 잡아둔 돈입니다. 입찰 기준이 되는 추정가격(부가세 제외)은
+# 표가 넓어져 메일에는 넣지 않고 엑셀에만 둡니다.
 
 # 점수 근거 중 '어떤 낱말에 걸렸는지' 를 알려주는 항목들.
 # '조합+4' '기관+3' 같은 계산 내역은 메일에 넣지 않는다.
@@ -966,6 +1017,14 @@ def esc(text) -> str:
     return (str(text or "")
             .replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
             .replace('"', "&quot;"))
+
+
+def won(value) -> str:
+    """메일 표에 넣을 금액. 천 단위마다 쉼표, 없으면 '-'."""
+    try:
+        return f"{int(value):,}"
+    except (TypeError, ValueError):
+        return "-"
 
 
 def half_of_day(when: datetime) -> str:
@@ -1087,6 +1146,8 @@ def mail_html(rows: list[list], period: str, end: datetime, root: Path,
             org = r[COL_DM] or r[COL_NT] or "기관미상"
             link = r[COL_LINK]
             title = esc(r[COL_TITLE])
+            kind = str(r[COL_KIND] or "-")
+            kind_color = KIND_COLOR.get(kind, "#888")
             if link:
                 title = (f'<a href="{esc(link)}" style="color:#0563c1">'
                          f'{title}</a>')
@@ -1095,11 +1156,15 @@ def mail_html(rows: list[list], period: str, end: datetime, root: Path,
                 f'<td style="{td};text-align:center;color:#888">{no}</td>'
                 f'<td style="{td};text-align:center;white-space:nowrap;'
                 f'color:{color};{BOLD}">{esc(GRADE_LABEL.get(g, g))}</td>'
+                f'<td style="{td};text-align:center;white-space:nowrap;'
+                f'color:{kind_color}">{esc(kind)}</td>'
                 f'<td style="{td};white-space:nowrap">{esc(r[COL_REG])}</td>'
                 f'<td style="{td}">{esc(org)}</td>'
                 f'<td style="{td};max-width:420px">{title}</td>'
                 f'<td style="{td};white-space:nowrap">'
                 f'{esc(r[COL_DUE]) or "-"}</td>'
+                f'<td style="{td};text-align:right;white-space:nowrap">'
+                f'{won(r[COL_BUDGET])}</td>'
                 f'<td style="{td};color:#666;max-width:300px">'
                 f'{esc(search_keywords(r))}</td>'
                 "</tr>")
@@ -1131,9 +1196,14 @@ def mail_text(rows: list[list], end: datetime, text: dict) -> str:
     건수, 내역 = summary_parts(rows)
     lines = [fill(text, "요약", 건수=건수, 내역=내역), ""]
     for no, r in enumerate(rows, start=1):
+        kind = str(r[COL_KIND] or "")
+        표시 = f"[{kind}] " if kind in KIND_COLOR else ""   # 신규는 굳이 안 적는다
         lines.append(f"{no}. [{GRADE_LABEL.get(r[COL_GRADE], r[COL_GRADE])}] "
-                     f"{r[COL_DM] or r[COL_NT]} — {r[COL_TITLE]}")
-        lines.append(f"    마감 {r[COL_DUE]} · {search_keywords(r)} · {r[COL_LINK]}")
+                     f"{표시}{r[COL_DM] or r[COL_NT]} — {r[COL_TITLE]}")
+        금액 = won(r[COL_BUDGET])
+        예산 = "예산 미기재" if 금액 == "-" else f"예산 {금액}원"
+        lines.append(f"    마감 {r[COL_DUE]} · {예산}"
+                     f" · {search_keywords(r)} · {r[COL_LINK]}")
     return "\n".join(lines)
 
 
@@ -1318,6 +1388,23 @@ def notify(cfg: dict, rows: list[list], root: Path,
 # ---------------------------------------------------------------------------
 
 
+def column_map(head: list[str]) -> dict[int, int] | None:
+    """엑셀 첫 줄의 이름을 보고 {지금 자리: 그 파일에서의 자리} 를 만든다.
+
+    컬럼을 늘릴 때마다 예전 파일을 못 읽게 되면 --메일만 으로 재발송을 할 수
+    없다. 자리를 세는 대신 이름을 맞춰보면 칸이 늘어나도 그대로 읽힌다.
+    쓸모없는 파일(다른 엑셀을 잘못 지정한 경우)이면 None 을 준다.
+    """
+    자리 = {}
+    for pos, name in enumerate(head):
+        name = RENAMED.get(name, name)
+        if name in HEADERS:
+            자리.setdefault(HEADERS.index(name), pos)
+    # 이 넷이 없으면 메일 표를 못 그린다. 우리 엑셀이 아니라고 본다.
+    필수 = (COL_GRADE, COL_TITLE, COL_LINK, COL_STAMP)
+    return None if any(c not in 자리 for c in 필수) else 자리
+
+
 def read_saved_rows(path: Path) -> list[list]:
     """이미 저장된 엑셀에서 행을 그대로 읽어온다.
 
@@ -1333,20 +1420,27 @@ def read_saved_rows(path: Path) -> list[list]:
         return []
 
     ws = wb.active
-    head = [c.value for c in ws[1]][:len(HEADERS)]
-    if head == OLD_HEADERS:
-        log(f"[안내] '등급' 을 쓰던 예전 파일입니다. S 는 A 로 바꿔 읽습니다: {path.name}")
-    elif head != HEADERS:
+    head = [str(c.value or "").strip() for c in ws[1]]
+    자리 = column_map(head)
+    if 자리 is None:
         log(f"[주의] 컬럼 구성이 달라 건너뜁니다: {path.name}")
         return []
+    빠진칸 = [h for i, h in enumerate(HEADERS) if i not in 자리]
+    if 빠진칸:
+        log(f"[안내] 컬럼이 늘기 전 파일입니다. {', '.join(빠진칸)} 은 빈칸으로"
+            f" 읽습니다: {path.name}")
 
     rows = []
     for r in ws.iter_rows(min_row=2):
-        vals = [c.value for c in r][:len(HEADERS)]
-        if len(vals) < len(HEADERS) or not vals[COL_GRADE]:
+        raw = [c.value for c in r]
+        vals = [""] * len(HEADERS)
+        for 새, 옛 in 자리.items():
+            if 옛 < len(raw):
+                vals[새] = raw[옛]
+        if not vals[COL_GRADE]:
             continue
         vals[COL_GRADE] = OLD_GRADE.get(vals[COL_GRADE], vals[COL_GRADE])
-        cell = r[COL_LINK]
+        cell = r[자리[COL_LINK]]
         vals[COL_LINK] = (cell.hyperlink.target if cell.hyperlink
                           else cell.value) or ""
         rows.append(vals)
@@ -1606,8 +1700,10 @@ def run(cfg: dict, sc: Scorer, root: Path, begin: datetime, end: datetime,
             n_files = sum(1 for i in range(1, 11)
                           if (r.get(f"ntceSpecDocUrl{i}") or "").strip())
 
-            row = [grade, (r.get("bidNtceDt") or "")[:10], dm, nt, title,
-                   deadline(r), target, pts, kw, why,
+            row = [grade, notice_kind(r), (r.get("bidNtceDt") or "")[:10],
+                   dm, nt, title, deadline(r),
+                   money(r.get("asignBdgtAmt")), money(r.get("presmptPrce")),
+                   target, pts, kw, why,
                    n_files, no, (r.get("bidNtceDtlUrl") or "").strip(),
                    RUN_STAMP]
 

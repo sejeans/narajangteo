@@ -728,13 +728,19 @@ def captured(mod):
 
 
 def sample_rows(mod) -> list[list]:
-    """미리보기용 가짜 3건. A·B·C 를 하나씩 둬야 줄 색과 검토안내까지 다 보인다."""
+    """미리보기용 가짜 3건.
+
+    A·B·C 를 하나씩 둬야 줄 색과 검토안내까지 다 보인다. 공고종류도
+    신규·변경·재공고를 하나씩 두고, 예산이 빈 공고도 한 줄 섞어둔다.
+    """
     today = f"{datetime.now():%Y-%m-%d}"
     due = f"{datetime.now() + timedelta(days=7):%Y-%m-%d} 10:00"
 
-    def row(grade, dm, title, score, kw, why, no):
+    def row(grade, dm, title, score, kw, why, no, kind="신규", budget=""):
         r = [""] * len(mod.HEADERS)
         r[mod.COL_GRADE] = grade
+        r[mod.COL_KIND] = kind
+        r[mod.COL_BUDGET] = budget
         r[mod.COL_REG] = today
         r[mod.COL_DM] = dm
         r[mod.COL_NT] = "조달청"
@@ -750,12 +756,15 @@ def sample_rows(mod) -> list[list]:
 
     return [
         row("A", "경찰공제회", "2026~2027년 대체투자자산 공정가치 평가·검증 용역",
-            21, "업종코드 3865", "확정: 공정가치평가 · 기관+3", "20260814001"),
+            21, "업종코드 3865", "확정: 공정가치평가 · 기관+3", "20260814001",
+            budget=95000000),
         row("B", "새마을금고중앙회",
             "새마을금고중앙회 대체투자자산 공정가치 평가 및 투자성과 모니터링 용역",
-            16, "-", "확정: 공정가치평가 · 대상: 대체투자 · 기관+3", "20260814002"),
+            16, "-", "확정: 공정가치평가 · 대상: 대체투자 · 기관+3", "20260814002",
+            kind="변경", budget=210000000),
         row("C", "국민연금공단", "기준 포트폴리오 도입을 위한 자산배분 체계 연구용역",
-            6, "-", "대상: 자산배분 · 행위: 연구 · 기관+3", "20260814003"),
+            6, "-", "대상: 자산배분 · 행위: 연구 · 기관+3", "20260814003",
+            kind="재공고", budget=""),
     ]
 
 
