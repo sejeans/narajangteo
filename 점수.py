@@ -59,6 +59,7 @@ class Scorer:
 
         self.core = prep("core")
         self.market = prep("market")
+        self.strategy = prep("strategy")
         self.target = prep("target")
         self.action = prep("action")
         self.selectee = prep("selectee")
@@ -83,13 +84,19 @@ class Scorer:
 
     # ------------------------------------------------------------------
     def score(self, title: str, org: str = "") -> tuple[int, list[str]]:
-        """(점수, 근거 목록) 반환."""
+        """(점수, 근거 목록) 반환.
+
+        strategy 는 거부권(selectee)을 무효화하지 않는다. core/market 과
+        다른 점이 이것이다. '자산배분' 이 들어갔다고 '위탁운용사 선정'
+        같은 입찰 불가 건까지 살아나면 안 된다.
+        """
         t = norm(title)
         hits: list[str] = []
         pts = 0
 
         co = [w for w, n in self.core if n in t]
         mk = [w for w, n in self.market if n in t]
+        st = [w for w, n in self.strategy if n in t]
         tg = [w for w, n in self.target if n in t]
         ac = [w for w, n in self.action if n in t]
 
@@ -106,6 +113,9 @@ class Scorer:
         if mk:
             pts += 8
             hits.append("채권시장: " + ", ".join(mk[:2]))
+        if st:
+            pts += 6
+            hits.append("운용전략: " + ", ".join(st[:2]))
         if tg:
             pts += 2 * min(len(tg), 2)
             hits.append("대상: " + ", ".join(tg[:2]))
@@ -118,7 +128,7 @@ class Scorer:
 
         # 확정어도 조합도 없으면, 단어 몇 개 걸린 것만으로 올라오지 못하게 자른다.
         # 이게 없으면 '자산' '투자' '평가' 가 흩어져 있는 공고가 전부 올라온다.
-        if not co and not mk and not (tg and ac):
+        if not co and not mk and not st and not (tg and ac):
             pts = min(pts, 3)
 
         for i in self.institutions:
