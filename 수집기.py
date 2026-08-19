@@ -93,26 +93,33 @@ OLD_REVIEW_XLSX = "검토후보.xlsx"   # 한 파일로 합치기 전에 쓰던 
 SEEN_NAME = "_수집이력.json"
 PDF_DIR = "공고문"
 
-HEADERS = ["정확도", "공고종류", "등록일", "수요기관", "공고기관", "공고명",
-           "마감일시", "배정예산", "추정가격", "업무", "점수", "키워드", "근거",
-           "첨부", "공고번호", "링크", "수집일시"]
+HEADERS = ["정확도", "공고종류", "변경내역", "등록일", "수요기관", "공고기관",
+           "공고명", "마감일시", "배정예산", "추정가격", "업무", "점수", "키워드",
+           "근거", "첨부", "출처", "공고번호", "링크", "수집일시"]
 OLD_GRADE = {"S": "A"}
-WIDTHS = [6, 8, 12, 24, 24, 58, 17, 14, 14, 6, 6, 16, 40, 6, 18, 12, 17]
+WIDTHS = [6, 8, 34, 12, 24, 24, 58, 17, 14, 14, 6, 6, 16, 40, 6, 10, 18, 12, 17]
 COL_GRADE = 0
-COL_KIND = 1             # 공고종류 (신규/변경/재공고)
-COL_REG = 2              # 등록일
-COL_DM = 3               # 수요기관
-COL_NT = 4               # 공고기관
-COL_TITLE = 5
-COL_DUE = 6              # 마감일시
-COL_BUDGET = 7           # 배정예산 (부가세 포함)
-COL_PRICE = 8            # 추정가격 (부가세 제외)
-COL_SCORE = 10
-COL_KW = 11              # 키워드
-COL_WHY = 12             # 근거
-COL_NO = 14              # 공고번호
-COL_LINK = 15            # 링크 (하이퍼링크로 바꾸는 칸)
-COL_STAMP = 16           # 수집일시 (한 회차는 값이 모두 같다)
+COL_KIND = 1             # 공고종류 (신규/변경/재공고/취소)
+COL_DIFF = 2             # 변경내역 (우리 이력과 견줘 달라진 것. 신규는 빈칸)
+COL_REG = 3              # 등록일
+COL_DM = 4               # 수요기관
+COL_NT = 5               # 공고기관
+COL_TITLE = 6
+COL_DUE = 7              # 마감일시
+COL_BUDGET = 8           # 배정예산 (부가세 포함)
+COL_PRICE = 9            # 추정가격 (부가세 제외)
+COL_SCORE = 11
+COL_KW = 12              # 키워드
+COL_WHY = 13             # 근거
+COL_SRC = 15             # 출처 (지금은 모두 '나라장터')
+COL_NO = 16              # 공고번호
+COL_LINK = 17            # 링크 (하이퍼링크로 바꾸는 칸)
+COL_STAMP = 18           # 수집일시 (한 회차는 값이 모두 같다)
+
+# 지금은 나라장터 하나뿐이다. 기관 자체 홈페이지까지 보게 되면 여기가 늘고,
+# 수집이력도 출처마다 따로 세어야 한다(이력키 참고). 그때 컬럼을 새로 넣으면
+# 이미 쌓인 엑셀을 다 옮겨야 해서 지금 한 칸 잡아둔다.
+SRC_G2B = "나라장터"
 
 # 컬럼 구성은 몇 번 바뀌었고 앞으로도 바뀐다. --메일만 은 그 전에 쌓아둔
 # 엑셀도 읽을 수 있어야 해서, 자리(몇 번째 칸)가 아니라 첫 줄에 적힌 이름을
@@ -136,13 +143,16 @@ GRADE_LABEL = {"A": "A 일치", "B": "B 일부", "C": "C 검토"}
 MAIL_TEXT = {
     "제목": "[나라장터] {날짜} 신규 {건수}건 ({내역})",
     "제목_없음": "[나라장터] {날짜} 입찰 공고 특이사항 없습니다",
-    "제목_일부": "[나라장터] {날짜} 신규 {건수}건 ({내역}) — 일부 조회 실패",
+    "제목_변경": "[나라장터] {날짜} 공고 {건수}건 ({내역})",
+    "제목_일부": "[나라장터] {날짜} 공고 {건수}건 ({내역}) — 일부 조회 실패",
     "제목_실패": "[나라장터] {날짜} 자동수집 실패 — 확인 필요",
     "실패알림": ("이번 회차는 조회가 완전하지 않았습니다. 아래 목록에 빠진 "
                  "공고가 있을 수 있습니다.\n"
                  "못 받은 구간: {빠짐}"),
     "첫줄": "{시각} 기준 나라장터 신규 공고입니다. ({기간})",
     "요약": "총 {건수}건 — {내역}",
+    "변경머리": "■ 이미 알려드린 공고 중 바뀐 것 {건수}건",
+    "신규머리": "■ 새로 올라온 공고 {건수}건",
     "없음": "{날짜} 나라장터 입찰 공고 특이사항 없습니다.",
     "안내": ("공고명을 누르면 나라장터 공고 화면이 열립니다.\n"
              "A = 시가/대체 평가 및 채권평가회사(업종코드) 키워드 일치 · "
@@ -692,6 +702,11 @@ def money(raw) -> int | str:
         return ""
 
 
+def no_of(raw: dict) -> str:
+    """공고번호. 여러 곳에서 같은 방식으로 꺼내야 해서 하나로 묶는다."""
+    return (raw.get("bidNtceNo") or "").strip()
+
+
 def notice_ord(raw: dict) -> int:
     try:
         return int(str(raw.get("bidNtceOrd") or "0").strip() or 0)
@@ -699,33 +714,99 @@ def notice_ord(raw: dict) -> int:
         return 0
 
 
-def pick_live(raws: list[dict]) -> tuple[list[dict], int, int]:
-    """(살아있는 공고, 취소로 버린 수, 옛 차수로 버린 수)
+def pick_live(raws: list[dict]) -> tuple[list[dict], dict, int]:
+    """(살아있는 공고, 취소된 공고 {번호: 공고}, 옛 차수로 버린 수)
 
     목록 API 는 같은 공고를 차수마다 한 줄씩 준다. 차수는 재공고·변경·취소가
     생길 때마다 올라가므로(API 문서: '증가되는 수') 가장 큰 차수가 최신이다.
     나라장터 화면은 최신 차수만 보여주는데, 그대로 두면 엑셀에는 한 공고가
     여러 줄로 쌓인다.
 
-    취소공고는 그 공고번호를 통째로 버린다. 취소 줄만 빼면 이미 없어진
-    원공고가 마감일시까지 달고 남아 살아있는 공고처럼 보이기 때문이다.
-    실제로 공고를 취소하고 몇 분 뒤 새 번호로 다시 올리는 기관이 있다.
+    취소공고는 살아있는 목록에서 뺀다. 취소 줄만 빼면 이미 없어진 원공고가
+    마감일시까지 달고 남아 살아있는 공고처럼 보이기 때문이다. 실제로 공고를
+    취소하고 몇 분 뒤 새 번호로 다시 올리는 기관이 있다.
+
+    다만 버리지는 않고 따로 돌려준다. 우리가 이미 메일로 보낸 공고가
+    취소됐다면 그것도 알려야 한다. 조용히 사라지면 담당자는 그 공고가
+    아직 살아있는 줄 안다.
     """
     최신: dict[str, dict] = {}
-    취소: set[str] = set()
+    취소: dict[str, dict] = {}
 
     for r in raws:
         no = (r.get("bidNtceNo") or "").strip()
         if not no:
             continue
         if (r.get("ntceKindNm") or "").strip() == "취소공고":
-            취소.add(no)
+            취소[no] = r
         cur = 최신.get(no)
         if cur is None or notice_ord(r) > notice_ord(cur):
             최신[no] = r
 
     live = [r for no, r in 최신.items() if no not in 취소]
-    return live, len(취소), len(raws) - len(최신)
+    return live, 취소, len(raws) - len(최신)
+
+
+# ---------------------------------------------------------------------------
+# 이미 보낸 공고가 달라졌는가
+#
+# API 는 '이 공고가 변경공고다' 까지만 알려주고 무엇이 바뀌었는지는 말해주지
+# 않는다. 변경일시(chgDt)는 1,500건 중 1건만 채워져 있어 쓸 수 없다.
+# 그래서 우리가 지난 회차에 적어둔 값과 직접 견준다.
+# ---------------------------------------------------------------------------
+
+
+def diff_notice(이전: dict, raw: dict, 차수: int) -> str:
+    """지난번과 달라진 것을 사람이 읽는 한 줄로. 같으면 빈 문자열.
+
+    이전 이 비어 있으면(옛 이력에서 넘어온 항목) 비교할 수 없으므로 빈
+    문자열을 준다. 모르는 것을 '변경' 이라고 말하면 안 된다.
+    """
+    if not 이전:
+        return ""
+
+    조각 = []
+    옛마감, 새마감 = str(이전.get("마감") or ""), deadline(raw)
+    if 옛마감 and 새마감 and 옛마감 != 새마감:
+        조각.append(f"마감 {옛마감} → {새마감}")
+
+    옛예산, 새예산 = 이전.get("예산"), money(raw.get("asignBdgtAmt"))
+    if isinstance(옛예산, int) and isinstance(새예산, int) and 옛예산 != 새예산:
+        조각.append(f"예산 {옛예산:,} → {새예산:,}")
+
+    옛이름 = str(이전.get("공고명") or "")
+    새이름 = (raw.get("bidNtceNm") or "").strip()
+    if 옛이름 and 새이름 and 옛이름 != 새이름:
+        조각.append("공고명 바뀜")
+
+    if 조각:
+        return " · ".join(조각)
+
+    # 눈에 보이는 값은 그대로인데 차수만 올라간 경우. 규격서나 첨부만 고친
+    # 것이라 목록 API 로는 무엇이 바뀌었는지 알 수 없다. 그래도 알려준다.
+    # 공고문을 다시 열어봐야 하는 건이기 때문이다.
+    옛차수 = 이전.get("차수")
+    if isinstance(옛차수, int) and 차수 > 옛차수:
+        return f"재게시 (차수 {옛차수:03d} → {차수:03d}, 목록에 보이는 값은 그대로)"
+    return ""
+
+
+def cancel_row(이전: dict, raw: dict, 출처: str = SRC_G2B) -> list:
+    """취소된 공고 한 줄. 판정을 새로 하지 않고 지난번 값을 그대로 쓴다.
+
+    이미 한 번 메일에 실어 보낸 공고다. 지금 다시 채점해서 등급이 달라지면
+    받는 사람만 헷갈린다. 알려야 할 것은 '그때 그 공고가 취소됐다' 뿐이다.
+    """
+    return [이전.get("정확도") or "C", "취소", "공고 취소됨",
+            (raw.get("bidNtceDt") or "")[:10],
+            (raw.get("dminsttNm") or "").strip(),
+            (raw.get("ntceInsttNm") or "").strip(),
+            (raw.get("bidNtceNm") or "").strip() or 이전.get("공고명") or "",
+            deadline(raw), money(raw.get("asignBdgtAmt")),
+            money(raw.get("presmptPrce")), "", 이전.get("점수") or 0,
+            "-", "이미 보낸 공고가 취소됐습니다", 0, 출처,
+            (raw.get("bidNtceNo") or "").strip(),
+            (raw.get("bidNtceDtlUrl") or "").strip(), RUN_STAMP]
 
 
 # ---------------------------------------------------------------------------
@@ -905,26 +986,77 @@ class RunLock:
         return False
 
 
-def load_seen(path: Path) -> set:
-    """수집이력을 공고번호 집합으로 읽는다.
+def 이력키(출처: str, no: str) -> str:
+    """수집이력의 열쇠. 공고번호는 사이트마다 형식이 달라 출처를 앞에 붙인다."""
+    return f"{출처}:{no}"
 
-    예전 이력은 '공고번호-000' 형태로 저장돼 있다. 그대로 두면 새 방식과
-    안 맞아 이미 받은 공고를 한 번씩 다시 받는다. 읽을 때 차수를 떼어낸다.
+
+def load_seen(path: Path) -> dict:
+    """수집이력을 {이력키: 지난번 값} 으로 읽는다.
+
+    번호만 남기던 때는 '이미 보낸 공고인가' 만 답할 수 있었다. 그래서 이미
+    보낸 공고의 마감이 미뤄져도 알 길이 없었다. 무엇이 바뀌었는지 말하려면
+    지난번 값을 들고 있어야 한다.
+
+    옛 파일도 그대로 읽는다. 값이 없는 항목은 '비교 불가' 로 두고, 다음
+    회차에 값을 채운다. 넘어온 직후 회차에서 전부 '변경' 으로 쏟아지는 것을
+    막기 위해서다 (그건 변경이 아니라 우리가 몰랐던 것뿐이다).
     """
     if not path.exists():
-        return set()
+        return {}
     try:
         saved = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
-        return set()
-    return {str(s).rpartition("-")[0] or str(s) for s in saved}
+        return {}
+
+    if isinstance(saved, dict) and isinstance(saved.get("공고"), dict):
+        return {str(k): dict(v) for k, v in saved["공고"].items()
+                if isinstance(v, dict)}
+
+    # 옛 형식: ["공고번호", ...] 또는 ["공고번호-000", ...]
+    옛 = {}
+    for x in saved if isinstance(saved, list) else []:
+        no = str(x).rpartition("-")[0] or str(x)
+        옛[이력키(SRC_G2B, no)] = {}      # 값이 없다 = 비교할 수 없다
+    return 옛
 
 
-def save_seen(path: Path, seen: set) -> None:
+def save_seen(path: Path, seen: dict) -> None:
     try:
-        path.write_text(json.dumps(sorted(seen), ensure_ascii=False), encoding="utf-8")
+        path.write_text(
+            json.dumps({"형식": 2, "공고": dict(sorted(seen.items()))},
+                       ensure_ascii=False, indent=1),
+            encoding="utf-8")
     except OSError as exc:
         log(f"[주의] 수집이력을 저장하지 못했습니다: {exc}")
+
+
+def first_snapshot(raw: dict) -> dict:
+    """옛 이력에서 넘어온 항목을 지금 값으로 채운다.
+
+    등급과 점수는 비워둔다. 그때 어떤 판정이었는지 모르기 때문이다.
+    이 항목은 이번 회차에 '변경' 으로 알리지 않는다. 값이 달라서가 아니라
+    우리가 몰랐던 것뿐이라 알릴 내용이 없다.
+    """
+    return {"차수": notice_ord(raw),
+            "마감": deadline(raw),
+            "예산": money(raw.get("asignBdgtAmt")),
+            "공고명": (raw.get("bidNtceNm") or "").strip(),
+            "정확도": "", "점수": 0, "본때": RUN_STAMP}
+
+
+def snapshot(row: list, 차수: int) -> dict:
+    """다음 회차에 견줄 값. 엑셀 한 줄에서 필요한 것만 뽑는다.
+
+    차수는 엑셀에 없어서(사람이 볼 값이 아니다) 따로 받는다.
+    """
+    return {"차수": int(차수),
+            "마감": str(row[COL_DUE] or ""),
+            "예산": row[COL_BUDGET] if isinstance(row[COL_BUDGET], int) else "",
+            "공고명": str(row[COL_TITLE] or ""),
+            "정확도": str(row[COL_GRADE] or ""),
+            "점수": row[COL_SCORE] if isinstance(row[COL_SCORE], int) else 0,
+            "본때": str(row[COL_STAMP] or "")}
 
 
 # ---------------------------------------------------------------------------
@@ -1063,6 +1195,8 @@ FONT_SB = ("'NICE 고딕Neo2유니 TTF 05 Sb','NICE GtNeo2Uni TTF 05 Sb',"
 BOLD = f"font-family:{FONT_SB};font-weight:normal"
 MAIL_HEADERS = ["구분", "정확도", "공고종류", "등록일", "수요기관", "공고명",
                 "마감일시", "사업예산", "검색 키워드"]
+# 변경·취소는 볼 것이 다르다. 점수나 키워드가 아니라 '무엇이 바뀌었나' 다.
+CHANGE_HEADERS = ["구분", "공고종류", "수요기관", "공고명", "변경내역", "마감일시"]
 
 # 메일의 '사업예산' 은 배정예산금액(asignBdgtAmt)입니다. 부가세를 포함한,
 # 발주기관이 잡아둔 돈입니다. 입찰 기준이 되는 추정가격(부가세 제외)은
@@ -1141,12 +1275,29 @@ def fill(text: dict, key: str, **vals) -> str:
     return MAIL_TEXT[key]
 
 
+def split_rows(rows: list[list]) -> tuple[list[list], list[list]]:
+    """(새로 올라온 것, 이미 보낸 것 중 바뀐 것).
+
+    가르는 기준은 공고종류가 아니라 변경내역이 채워졌는지다. 처음 보는
+    공고인데 나라장터가 '변경공고' 라고 달아둔 경우가 있는데, 그건 우리에겐
+    새 공고다. 우리 이력과 견줘 달라진 것만 변경으로 본다.
+    """
+    바뀜 = [r for r in rows if str(r[COL_DIFF] or "").strip()]
+    새것 = [r for r in rows if not str(r[COL_DIFF] or "").strip()]
+    return 새것, 바뀜
+
+
 def summary_parts(rows: list[list]) -> tuple[int, str]:
-    """(건수, '수집 9건 · 검토 4건')"""
-    n_c = sum(1 for r in rows if r[COL_GRADE] == "C")
-    n_hit = len(rows) - n_c
+    """(건수, '수집 9건 · 검토 4건 · 변경 2건')"""
+    새것, 바뀜 = split_rows(rows)
+    n_c = sum(1 for r in 새것 if r[COL_GRADE] == "C")
+    n_hit = len(새것) - n_c
+    n_취소 = sum(1 for r in 바뀜 if r[COL_KIND] == "취소")
+    n_변경 = len(바뀜) - n_취소
     내역 = " · ".join(x for x in (f"수집 {n_hit}건" if n_hit else "",
-                                 f"검토 {n_c}건" if n_c else "") if x)
+                                 f"검토 {n_c}건" if n_c else "",
+                                 f"변경 {n_변경}건" if n_변경 else "",
+                                 f"취소 {n_취소}건" if n_취소 else "") if x)
     return len(rows), 내역
 
 
@@ -1166,6 +1317,9 @@ def mail_subject(cfg: dict, rows: list[list], when: datetime,
                     내역=내역 or "수집 0건")
     if not rows:
         return fill(text, "제목_없음", 날짜=stamp)
+    if split_rows(rows)[1]:
+        # 변경·취소가 섞였으면 전부를 '신규' 라고 부를 수 없다.
+        return fill(text, "제목_변경", 날짜=stamp, 건수=건수, 내역=내역)
     return fill(text, "제목", 날짜=stamp, 건수=건수, 내역=내역)
 
 
@@ -1201,6 +1355,85 @@ def as_html(line: str) -> str:
     return esc(line).replace("\n", "<br>")
 
 
+def change_table(rows: list[list], th: str, td: str, text: dict) -> list[str]:
+    """변경·취소 표. 신규 표보다 먼저 나와야 한다.
+
+    마감이 미뤄지거나 공고가 취소된 것은 이미 검토를 시작한 건이라
+    새 공고보다 급하다. 아래에 붙이면 표를 다 읽은 뒤에야 보게 된다.
+    """
+    if not rows:
+        return []
+    parts = [f'<p style="margin:14px 0 6px;{BOLD};color:#c00000">'
+             f'{as_html(fill(text, "변경머리", 건수=len(rows)))}</p>',
+             '<table cellspacing="0" cellpadding="0" '
+             f'style="border-collapse:collapse;font-size:10pt;'
+             f'font-family:{FONT}">',
+             "<tr>" + "".join(f'<th style="{th}">{esc(h)}</th>'
+                              for h in CHANGE_HEADERS) + "</tr>"]
+    for no, r in enumerate(rows, start=1):
+        kind = str(r[COL_KIND] or "-")
+        color = KIND_COLOR.get(kind, "#888")
+        취소 = kind == "취소"
+        bg = "background:#fdf0f0;" if 취소 else ""
+        title = esc(r[COL_TITLE])
+        if r[COL_LINK]:
+            title = (f'<a href="{esc(r[COL_LINK])}" style="color:#0563c1">'
+                     f'{title}</a>')
+        마감 = "—" if 취소 else (esc(r[COL_DUE]) or "-")
+        parts.append(
+            f'<tr style="{bg}">'
+            f'<td style="{td};text-align:center;color:#888">{no}</td>'
+            f'<td style="{td};text-align:center;white-space:nowrap;'
+            f'color:{color};{BOLD}">{esc(kind)}</td>'
+            f'<td style="{td}">{esc(r[COL_DM] or r[COL_NT] or "기관미상")}</td>'
+            f'<td style="{td};max-width:360px">{title}</td>'
+            f'<td style="{td};color:#c00000;max-width:300px">'
+            f'{esc(r[COL_DIFF])}</td>'
+            f'<td style="{td};white-space:nowrap">{마감}</td>'
+            "</tr>")
+    parts.append("</table>")
+    return parts
+
+
+def new_table(rows: list[list], th: str, td: str) -> list[str]:
+    """새로 올라온 공고 표. 이 메일의 본체다."""
+    # 아웃룩은 표 안에서 바깥 글꼴을 물려받지 않는다. 표에도 다시 적는다.
+    parts = ['<table cellspacing="0" cellpadding="0" '
+             f'style="border-collapse:collapse;font-size:10pt;'
+             f'font-family:{FONT}">',
+             "<tr>" + "".join(f'<th style="{th}">{esc(h)}</th>'
+                              for h in MAIL_HEADERS) + "</tr>"]
+    for no, r in enumerate(rows, start=1):
+        g = r[COL_GRADE]
+        bg = "background:#f5f5f5;" if g == "C" else ""
+        color = "#" + GRADE_COLOR.get(g, "000000")
+        org = r[COL_DM] or r[COL_NT] or "기관미상"
+        title = esc(r[COL_TITLE])
+        kind = str(r[COL_KIND] or "-")
+        kind_color = KIND_COLOR.get(kind, "#888")
+        if r[COL_LINK]:
+            title = (f'<a href="{esc(r[COL_LINK])}" style="color:#0563c1">'
+                     f'{title}</a>')
+        parts.append(
+            f'<tr style="{bg}">'
+            f'<td style="{td};text-align:center;color:#888">{no}</td>'
+            f'<td style="{td};text-align:center;white-space:nowrap;'
+            f'color:{color};{BOLD}">{esc(GRADE_LABEL.get(g, g))}</td>'
+            f'<td style="{td};text-align:center;white-space:nowrap;'
+            f'color:{kind_color}">{esc(kind)}</td>'
+            f'<td style="{td};white-space:nowrap">{esc(r[COL_REG])}</td>'
+            f'<td style="{td}">{esc(org)}</td>'
+            f'<td style="{td};max-width:420px">{title}</td>'
+            f'<td style="{td};white-space:nowrap">{esc(r[COL_DUE]) or "-"}</td>'
+            f'<td style="{td};text-align:right;white-space:nowrap">'
+            f'{won(r[COL_BUDGET])}</td>'
+            f'<td style="{td};color:#666;max-width:300px">'
+            f'{esc(search_keywords(r))}</td>'
+            "</tr>")
+    parts.append("</table>")
+    return parts
+
+
 def mail_html(rows: list[list], period: str, end: datetime, root: Path,
               attached: list[Path], text: dict, 빠짐: str = "") -> str:
     """본문 HTML. 아웃룩이 지원하는 범위(표 + 인라인 스타일)만 쓴다.
@@ -1212,7 +1445,8 @@ def mail_html(rows: list[list], period: str, end: datetime, root: Path,
           f"color:#fff;{BOLD};text-align:center;white-space:nowrap")
     td = "padding:6px 8px;border:1px solid #d0d0d0;vertical-align:top"
 
-    n_c = sum(1 for r in rows if r[COL_GRADE] == "C")
+    n_c = sum(1 for r in rows
+              if r[COL_GRADE] == "C" and not str(r[COL_DIFF] or "").strip())
     # 본문 기본 크기. 첫줄('… 신규 공고입니다')과 요약 줄이 이걸 물려받는다.
     # 아웃룩은 pt 로 적어야 워드에서 보던 크기와 같게 나온다.
     parts = [f'<div style="font-family:{FONT};font-size:11pt;color:#222">']
@@ -1231,6 +1465,7 @@ def mail_html(rows: list[list], period: str, end: datetime, root: Path,
         parts.append('<p style="margin:0">조회된 신규 공고가 없습니다. '
                      '다만 위 구간을 못 받았으므로 없다고 단정할 수 없습니다.</p>')
     else:
+        새것, 바뀜 = split_rows(rows)
         건수, 내역 = summary_parts(rows)
         머리 = fill(text, "첫줄", 시각=f"{end:%Y.%m.%d %H:%M}", 기간=period)
         if not period:
@@ -1238,43 +1473,16 @@ def mail_html(rows: list[list], period: str, end: datetime, root: Path,
         parts.append(f'<p style="margin:0 0 4px">{as_html(머리)}</p>')
         parts.append(f'<p style="margin:0 0 10px;{BOLD}">'
                      f'{as_html(fill(text, "요약", 건수=건수, 내역=내역))}</p>')
-        # 아웃룩은 표 안에서 바깥 글꼴을 물려받지 않는다. 표에도 다시 적는다.
-        parts.append('<table cellspacing="0" cellpadding="0" '
-                     f'style="border-collapse:collapse;font-size:10pt;'
-                     f'font-family:{FONT}">')
-        parts.append("<tr>" + "".join(
-            f'<th style="{th}">{esc(h)}</th>' for h in MAIL_HEADERS) + "</tr>")
 
-        for no, r in enumerate(rows, start=1):
-            g = r[COL_GRADE]
-            bg = "background:#f5f5f5;" if g == "C" else ""
-            color = "#" + GRADE_COLOR.get(g, "000000")
-            org = r[COL_DM] or r[COL_NT] or "기관미상"
-            link = r[COL_LINK]
-            title = esc(r[COL_TITLE])
-            kind = str(r[COL_KIND] or "-")
-            kind_color = KIND_COLOR.get(kind, "#888")
-            if link:
-                title = (f'<a href="{esc(link)}" style="color:#0563c1">'
-                         f'{title}</a>')
-            parts.append(
-                f'<tr style="{bg}">'
-                f'<td style="{td};text-align:center;color:#888">{no}</td>'
-                f'<td style="{td};text-align:center;white-space:nowrap;'
-                f'color:{color};{BOLD}">{esc(GRADE_LABEL.get(g, g))}</td>'
-                f'<td style="{td};text-align:center;white-space:nowrap;'
-                f'color:{kind_color}">{esc(kind)}</td>'
-                f'<td style="{td};white-space:nowrap">{esc(r[COL_REG])}</td>'
-                f'<td style="{td}">{esc(org)}</td>'
-                f'<td style="{td};max-width:420px">{title}</td>'
-                f'<td style="{td};white-space:nowrap">'
-                f'{esc(r[COL_DUE]) or "-"}</td>'
-                f'<td style="{td};text-align:right;white-space:nowrap">'
-                f'{won(r[COL_BUDGET])}</td>'
-                f'<td style="{td};color:#666;max-width:300px">'
-                f'{esc(search_keywords(r))}</td>'
-                "</tr>")
-        parts.append("</table>")
+        parts += change_table(바뀜, th, td, text)
+        if 새것:
+            if 바뀜:
+                parts.append(f'<p style="margin:16px 0 6px;{BOLD}">'
+                             f'{as_html(fill(text, "신규머리", 건수=len(새것)))}</p>')
+            parts += new_table(새것, th, td)
+        else:
+            parts.append('<p style="margin:14px 0 0">새로 올라온 공고는 '
+                         '없습니다.</p>')
 
         parts.append(f'<p style="margin:12px 0 0;font-size:10pt;color:#777">'
                      f'{as_html(fill(text, "안내"))}</p>')
@@ -1302,9 +1510,17 @@ def mail_text(rows: list[list], end: datetime, text: dict,
     if not rows:
         본문 = "조회된 신규 공고가 없습니다." if 빠짐 else no_news_line(text, end)
         return "\n".join(머리 + [본문])
+    새것, 바뀜 = split_rows(rows)
     건수, 내역 = summary_parts(rows)
     lines = 머리 + [fill(text, "요약", 건수=건수, 내역=내역), ""]
-    for no, r in enumerate(rows, start=1):
+    if 바뀜:
+        lines.append(fill(text, "변경머리", 건수=len(바뀜)))
+        for no, r in enumerate(바뀜, start=1):
+            lines.append(f"{no}. [{r[COL_KIND]}] "
+                         f"{r[COL_DM] or r[COL_NT]} — {r[COL_TITLE]}")
+            lines.append(f"    {r[COL_DIFF]} · {r[COL_LINK]}")
+        lines += ["", fill(text, "신규머리", 건수=len(새것))]
+    for no, r in enumerate(새것, start=1):
         kind = str(r[COL_KIND] or "")
         표시 = f"[{kind}] " if kind in KIND_COLOR else ""   # 신규는 굳이 안 적는다
         lines.append(f"{no}. [{GRADE_LABEL.get(r[COL_GRADE], r[COL_GRADE])}] "
@@ -1835,6 +2051,7 @@ def run(cfg: dict, sc: Scorer, root: Path, begin: datetime, end: datetime,
     # 수집분과 검토 필요분을 한 목록에 담는다 (요구사항_v3 회신 3번).
     결과: list[list] = []
     처리됨: set = set()
+    차수기록: dict[str, int] = {}   # 공고번호 → 이번에 본 차수 (이력에 남긴다)
     전체 = 0
     pdf_검사수 = 0
     저장된_pdf: list[Path] = []
@@ -1848,16 +2065,43 @@ def run(cfg: dict, sc: Scorer, root: Path, begin: datetime, end: datetime,
             log(f"  [경고] {target} 조회가 완전하지 않습니다: {', '.join(빠짐)}")
         전체 += len(raws)
 
-        live, n_취소, n_옛차수 = pick_live(raws)
-        신규 = []
+        live, 취소목록, n_옛차수 = pick_live(raws)
+
+        # 이미 보낸 공고는 건너뛴다. 다만 '그때와 값이 같을 때만' 이다.
+        # 마감이 미뤄졌거나 예산이 바뀌었으면 다시 알려야 한다.
+        신규, 변경 = [], []
         for r in live:
-            uid = (r.get("bidNtceNo") or "").strip()
-            if uid in 처리됨 or uid in seen:
+            uid = no_of(r)
+            if uid in 처리됨:
                 continue
             처리됨.add(uid)
-            신규.append(r)
-        log(f"  {len(raws):,}건 조회 → 취소 {n_취소:,}건·옛차수 {n_옛차수:,}건 제외"
-            f" → 신규 {len(신규):,}건")
+            차수기록[uid] = notice_ord(r)
+            이전 = seen.get(이력키(SRC_G2B, uid))
+            if 이전 is None:
+                신규.append(r)
+                continue
+            내역 = diff_notice(이전, r, notice_ord(r))
+            if 내역:
+                변경.append((r, 내역))
+            elif not 이전:
+                # 옛 이력이라 견줄 값이 없다. 지금 값을 채워 다음 회차부터
+                # 비교되게 한다. 이번에는 알리지 않는다.
+                seen[이력키(SRC_G2B, uid)] = first_snapshot(r)
+
+        # 우리가 보낸 공고가 취소됐으면 그것도 알린다.
+        취소행 = []
+        for uid, r in 취소목록.items():
+            이전 = seen.get(이력키(SRC_G2B, uid))
+            if 이전:                      # 빈 dict(옛 이력)면 등급을 모른다
+                취소행.append(cancel_row(이전, r))
+        결과 += 취소행
+
+        log(f"  {len(raws):,}건 조회 → 취소 {len(취소목록):,}건"
+            f"·옛차수 {n_옛차수:,}건 제외 → 신규 {len(신규):,}건")
+        if 변경 or 취소행:
+            log(f"  이미 보낸 공고 중 변경 {len(변경)}건 · 취소 {len(취소행)}건")
+        for row in 취소행:
+            log(f"    [취소] {row[COL_DM] or row[COL_NT]} — {row[COL_TITLE][:44]}")
 
         # PDF 를 열기 전에 점수로 후보를 먼저 좁힌다. 이게 없으면 3만 건을 다 연다.
         후보 = []
@@ -1871,15 +2115,29 @@ def run(cfg: dict, sc: Scorer, root: Path, begin: datetime, end: datetime,
             pts, _ = sc.score((r.get("bidNtceNm") or ""), orgs)
             if pts >= sc.review_cut(orgs):
                 후보.append(r)
+        # 변경된 건은 점수와 무관하게 다시 본다. 이미 한 번 보낸 공고라
+        # 지금 점수가 문턱 아래로 내려갔더라도 '그 공고가 바뀌었다' 는
+        # 알려야 한다. 판정이 안 나오면 지난번 등급을 그대로 쓴다.
+        후보 += [r for r, _ in 변경]
+        변경내역 = {no_of(r): 내역 for r, 내역 in 변경}
+
         if use_pdf and 후보:
             log(f"  [3차] 후보 {len(후보)}건의 첨부 PDF 를 열어봅니다...")
             pdf_검사수 += len(후보)
 
         for r in 후보:
+            내역 = 변경내역.get(no_of(r), "")
+            이전 = seen.get(이력키(SRC_G2B, no_of(r))) or {}
             verdict = judge(r, cfg, sc, lic_index, use_pdf)
             if verdict is None:
-                continue
-            grade, pts, kw, why, pdf_body = verdict
+                if not 내역:
+                    continue
+                # 바뀐 건인데 지금 기준으로는 안 걸린다. 지난번 판정을 쓴다.
+                grade = 이전.get("정확도") or "C"
+                pts = 이전.get("점수") or 0
+                kw, why, pdf_body = "-", "지난 회차 판정을 그대로 씁니다", None
+            else:
+                grade, pts, kw, why, pdf_body = verdict
 
             title = (r.get("bidNtceNm") or "").strip()
             dm = (r.get("dminsttNm") or "").strip()
@@ -1888,11 +2146,13 @@ def run(cfg: dict, sc: Scorer, root: Path, begin: datetime, end: datetime,
             n_files = sum(1 for i in range(1, 11)
                           if (r.get(f"ntceSpecDocUrl{i}") or "").strip())
 
-            row = [grade, notice_kind(r), (r.get("bidNtceDt") or "")[:10],
+            # 변경으로 다시 올라온 건은 API 가 뭐라 하든 '변경' 으로 적는다.
+            종류 = "변경" if 내역 else notice_kind(r)
+            row = [grade, 종류, 내역, (r.get("bidNtceDt") or "")[:10],
                    dm, nt, title, deadline(r),
                    money(r.get("asignBdgtAmt")), money(r.get("presmptPrce")),
                    target, pts, kw, why,
-                   n_files, no, (r.get("bidNtceDtlUrl") or "").strip(),
+                   n_files, SRC_G2B, no, (r.get("bidNtceDtlUrl") or "").strip(),
                    RUN_STAMP]
 
             결과.append(row)
@@ -1900,7 +2160,9 @@ def run(cfg: dict, sc: Scorer, root: Path, begin: datetime, end: datetime,
             # 엑셀에 오른 건이면 등급과 무관하게 공고문을 남긴다.
             # 특히 C등급(검토 필요)은 사람이 열어봐야 하는 것이라 더 필요하다.
             org = dm or nt or "기관미상"
-            log(f"    [{grade}] {org} — {title[:44]}")
+            log(f"    [{grade}]{' [변경]' if 내역 else ''} {org} — {title[:44]}")
+            if 내역:
+                log(f"           {내역}")
             if not list_only and pdf_body:
                 saved = save_pdf(pdf_body, org, title, no, root)
                 if saved:
@@ -1908,8 +2170,17 @@ def run(cfg: dict, sc: Scorer, root: Path, begin: datetime, end: datetime,
 
     # 처리한 것만 이력에 남긴다. 조회했지만 점수 미달로 버린 건은
     # 나중에 점수표를 고쳤을 때 다시 판정할 수 있어야 하므로 남기지 않는다.
+    #
+    # 번호만이 아니라 지금 값을 통째로 남긴다. 다음 회차에 이 값과 견줘
+    # 무엇이 바뀌었는지 말하기 위해서다.
     for row in 결과:
-        seen.add(row[COL_NO])
+        키 = 이력키(str(row[COL_SRC] or SRC_G2B), str(row[COL_NO]))
+        if row[COL_KIND] == "취소":
+            # 취소된 공고는 다시 살아나지 않는다. 이력에서 뺀다. 그대로 두면
+            # 같은 번호가 조회될 때마다 취소 알림이 되풀이된다.
+            seen.pop(키, None)
+            continue
+        seen[키] = snapshot(row, 차수기록.get(str(row[COL_NO]), 0))
 
     # 등급순(S→C), 같은 등급이면 점수 높은 것부터. 엑셀도 메일도 이 순서다.
     결과.sort(key=lambda r: (GRADE_ORDER.get(r[COL_GRADE], 9), -int(r[COL_SCORE])))

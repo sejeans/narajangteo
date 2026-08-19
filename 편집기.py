@@ -544,6 +544,8 @@ CONFIG_SCHEMA = [
          F("mail.문구.제목", "제목 (공고 있을 때)", "str",
            vars=["날짜", "건수", "내역"]),
          F("mail.문구.제목_없음", "제목 (0건일 때)", "str", vars=["날짜"]),
+         F("mail.문구.제목_변경", "제목 (변경·취소가 섞였을 때)", "str",
+           vars=["날짜", "건수", "내역"]),
          F("mail.문구.제목_일부", "제목 (일부 조회 실패)", "str",
            vars=["날짜", "건수", "내역"]),
          F("mail.문구.제목_실패", "제목 (자동수집 실패, 오류 메일)", "str",
@@ -552,6 +554,9 @@ CONFIG_SCHEMA = [
            vars=["빠짐"]),
          F("mail.문구.첫줄", "본문 첫 줄", "str", vars=["시각", "기간"]),
          F("mail.문구.요약", "표 위 요약", "str", vars=["건수", "내역"]),
+         F("mail.문구.변경머리", "변경·취소 표 위 제목", "str", vars=["건수"]),
+         F("mail.문구.신규머리", "신규 표 위 제목 (변경이 있을 때만 나옵니다)",
+           "str", vars=["건수"]),
          F("mail.문구.없음", "0건일 때 본문", "str", vars=["날짜"]),
          F("mail.문구.안내", "표 아래 안내 (A·B·C 설명)", "text", vars=[]),
          F("mail.문구.검토안내", "C가 있을 때 덧붙는 안내", "text", vars=[]),
@@ -742,15 +747,20 @@ def sample_rows(mod) -> list[list]:
 
     A·B·C 를 하나씩 둬야 줄 색과 검토안내까지 다 보인다. 공고종류도
     신규·변경·재공고를 하나씩 두고, 예산이 빈 공고도 한 줄 섞어둔다.
+
+    '변경' 갈래에서는 여기에 변경·취소 두 건을 더 붙인다 (changed_rows).
     """
     today = f"{datetime.now():%Y-%m-%d}"
     due = f"{datetime.now() + timedelta(days=7):%Y-%m-%d} 10:00"
 
-    def row(grade, dm, title, score, kw, why, no, kind="신규", budget=""):
+    def row(grade, dm, title, score, kw, why, no, kind="신규", budget="",
+            diff=""):
         r = [""] * len(mod.HEADERS)
         r[mod.COL_GRADE] = grade
         r[mod.COL_KIND] = kind
+        r[mod.COL_DIFF] = diff
         r[mod.COL_BUDGET] = budget
+        r[mod.COL_SRC] = mod.SRC_G2B
         r[mod.COL_REG] = today
         r[mod.COL_DM] = dm
         r[mod.COL_NT] = "조달청"
@@ -779,7 +789,44 @@ def sample_rows(mod) -> list[list]:
 
 
 # 미리보기로 볼 수 있는 네 가지. 문구가 갈래마다 통째로 다르다.
-PREVIEW_MODES = ("정상", "0건", "일부실패", "오류")
+PREVIEW_MODES = ("정상", "0건", "변경", "일부실패", "오류")
+
+
+def changed_rows(mod) -> list[list]:
+    """미리보기용 '이미 보낸 공고 중 바뀐 것' 두 건.
+
+    마감이 미뤄진 것 하나와 취소된 것 하나. 실무에서 가장 자주 보는 두 가지다.
+    """
+    due = f"{datetime.now() + timedelta(days=14):%Y-%m-%d} 10:00"
+    옛due = f"{datetime.now() + timedelta(days=3):%Y-%m-%d} 10:00"
+
+    def row(grade, kind, dm, title, diff, no, deadline, budget):
+        r = [""] * len(mod.HEADERS)
+        r[mod.COL_GRADE] = grade
+        r[mod.COL_KIND] = kind
+        r[mod.COL_DIFF] = diff
+        r[mod.COL_DM] = dm
+        r[mod.COL_NT] = "조달청"
+        r[mod.COL_TITLE] = title
+        r[mod.COL_DUE] = deadline
+        r[mod.COL_BUDGET] = budget
+        r[mod.COL_SCORE] = 18
+        r[mod.COL_KW] = "-"
+        r[mod.COL_SRC] = mod.SRC_G2B
+        r[mod.COL_NO] = no
+        r[mod.COL_LINK] = "https://www.g2b.go.kr/"
+        r[mod.COL_STAMP] = mod.RUN_STAMP
+        return r
+
+    return [
+        row("A", "변경", "사립학교교직원연금공단",
+            "대체투자자산 공정가치평가 및 사후모니터링 용역",
+            f"마감 {옛due} → {due} · 예산 210,000,000 → 240,000,000",
+            "20260801001", due, 240000000),
+        row("B", "취소", "한국예탁결제원",
+            "장외 채권거래 등 경쟁력 강화를 위한 이행방안 수립 연구용역",
+            "공고 취소됨", "20260805002", "", 180000000),
+    ]
 
 
 def mail_preview(values: dict, mode: str = "정상") -> dict:
@@ -797,6 +844,8 @@ def mail_preview(values: dict, mode: str = "정상") -> dict:
     text = {k.rsplit(".", 1)[1]: v for k, v in values.items()
             if k.startswith("mail.문구.")}
     rows = [] if mode == "0건" else sample_rows(mod)
+    if mode == "변경":
+        rows = changed_rows(mod) + rows
     빠짐 = ("용역 07/01 09:00~07/02 09:00 · 면허제한 06/29~06/30"
            if mode == "일부실패" else "")
 
@@ -1518,8 +1567,9 @@ function show(t,h,wide){
 // ---- 메일 미리보기 ------------------------------------------------------
 // 저장하지 않은 지금 화면의 문구로 수집기가 메일 한 통을 만들어 돌려준다.
 // 0건 메일은 문구가 통째로 달라 따로 봐야 한다.
-const MP_MODES=['정상','0건','일부실패','오류'];
-const MP_LABELS=['공고 3건 (A·B·C)','신규 0건','일부 조회 실패','자동수집 실패'];
+const MP_MODES=['정상','0건','변경','일부실패','오류'];
+const MP_LABELS=['공고 3건 (A·B·C)','신규 0건','변경·취소 포함',
+                 '일부 조회 실패','자동수집 실패'];
 async function mailPreview(mode){
   mode=MP_MODES.includes(mode)?mode:'정상';
   const r=await api('/api/mailpreview',{values:S.config.values,mode:mode});
