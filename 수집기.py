@@ -442,9 +442,25 @@ def call_api(endpoint: str, key: str, begin: datetime, end: datetime,
                 missing.append(f"{cur:%m/%d %H:%M}~{chunk_end:%m/%d %H:%M}")
                 break
 
+            # 한도초과·인증오류는 HTTP 200 에 'response' 가 아예 없는 형태로 온다.
+            #   {"OpenAPI_ServiceResponse": {"cmmMsgHeader": {"errMsg": ...}}}
+            # 이걸 걸러내지 않으면 resultCode 가 None 이 되어 아래 검사를 통과하고,
+            # items 가 비어 그냥 break 하면서 그 구간이 '정상 0건' 으로 남는다.
+            # 일일한도를 넘긴 날 "특이사항 없습니다" 메일이 나가는 경로가 이것이다.
+            if "OpenAPI_ServiceResponse" in payload:
+                msg = payload["OpenAPI_ServiceResponse"].get("cmmMsgHeader", {})
+                reason = (msg.get("returnAuthMsg") or msg.get("errMsg")
+                          or "알 수 없는 오류")
+                log(f"  [실패] {label} — {reason}")
+                missing.append(f"{cur:%m/%d %H:%M}~{chunk_end:%m/%d %H:%M}"
+                               f" ({reason})")
+                break
+
             header = payload.get("response", {}).get("header", {})
             code = header.get("resultCode")
-            if code not in (None, "00", "0"):
+            # None 을 허용하면 안 된다. 위에서 걸러지지 않은 낯선 응답 형태도
+            # 여기서 실패로 잡아야 '0건' 으로 둔갑하지 않는다.
+            if code not in ("00", "0"):
                 log(f"  [오류] {label} API 응답 {code}: {header.get('resultMsg')}")
                 missing.append(f"{cur:%m/%d %H:%M}~{chunk_end:%m/%d %H:%M}"
                                f" (응답 {code})")
