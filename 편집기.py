@@ -522,6 +522,10 @@ CONFIG_SCHEMA = [
            help="outlook 은 이 PC의 아웃룩으로. pywin32 필요, 로그온 세션 필요."),
          F("mail.to", "받는 사람", "list"),
          F("mail.cc", "참조", "list"),
+         F("mail.error_to", "오류 메일 받는 사람", "list",
+           help="조회가 실패한 회차에만 갑니다. 업무 담당자에게 API 오류 "
+                "메일이 가면 안 읽으므로, 수집기를 손볼 수 있는 사람을 "
+                "넣으세요. 비워두면 위 '받는 사람' 으로 갑니다."),
          F("mail.draft_only", "보내지 않고 초안만 띄우기", "bool",
            help="테스트 단계에 켜두면 내용을 눈으로 확인할 수 있습니다."),
          F("mail.attach_excel", "공고목록.xlsx 첨부", "bool"),
