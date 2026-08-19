@@ -36,6 +36,7 @@ narajangteo.py + 정밀수집.py + 목록만_추출.py 를 하나로 합친 것.
 
 from __future__ import annotations
 
+import csv
 import io
 import json
 import re
@@ -135,6 +136,11 @@ GRADE_LABEL = {"A": "A 일치", "B": "B 일부", "C": "C 검토"}
 MAIL_TEXT = {
     "제목": "[나라장터] {날짜} 신규 {건수}건 ({내역})",
     "제목_없음": "[나라장터] {날짜} 입찰 공고 특이사항 없습니다",
+    "제목_일부": "[나라장터] {날짜} 신규 {건수}건 ({내역}) — 일부 조회 실패",
+    "제목_실패": "[나라장터] {날짜} 자동수집 실패 — 확인 필요",
+    "실패알림": ("이번 회차는 조회가 완전하지 않았습니다. 아래 목록에 빠진 "
+                 "공고가 있을 수 있습니다.\n"
+                 "못 받은 구간: {빠짐}"),
     "첫줄": "{시각} 기준 나라장터 신규 공고입니다. ({기간})",
     "요약": "총 {건수}건 — {내역}",
     "없음": "{날짜} 나라장터 입찰 공고 특이사항 없습니다.",
@@ -328,6 +334,9 @@ def load_mail_config(raw) -> dict:
         "mode": str(m.get("mode") or "outlook").strip().lower(),
         "to": as_list(m.get("to")),
         "cc": as_list(m.get("cc")),
+        # 오류 메일 받는 사람. 업무 담당자에게 API 오류 메일이 가면 안 읽는다.
+        # 비워두면 to 로 간다 (아예 안 가는 것보다 낫다).
+        "error_to": as_list(m.get("error_to")),
         "문구": {k: str(v) for k, v in (m.get("문구") or {}).items()
                  if v is not None and str(v).strip()},
         "draft_only": bool(m.get("draft_only", False)),
@@ -396,13 +405,15 @@ def get_page(endpoint: str, params: dict, label: str) -> dict | None:
 
 
 def call_api(endpoint: str, key: str, begin: datetime, end: datetime,
-             label: str = "") -> tuple[list[dict], bool]:
-    """(수집된 행, 완전한지 여부) 반환.
+             label: str = "") -> tuple[list[dict], list[str]]:
+    """(수집된 행, 못 받은 구간 목록) 반환.
 
-    완전하지 않으면 호출한 쪽에서 부분 데이터임을 알려야 한다.
+    '완전한가' 만 알면 메일에 "일부 실패" 라고만 쓸 수 있다. 어느 날짜가
+    빠졌는지 적어줘야 그 구간만 --기준 으로 다시 돌릴 수 있으므로,
+    끊긴 구간을 '08/12 09:00~08/13 09:00' 형태로 모아 돌려준다.
     """
     rows: list[dict] = []
-    complete = True
+    missing: list[str] = []
     cur = begin
 
     while cur < end:
@@ -418,14 +429,15 @@ def call_api(endpoint: str, key: str, begin: datetime, end: datetime,
             }
             payload = get_page(endpoint, params, f"{label} {cur:%m/%d} p{page}")
             if payload is None:
-                complete = False
+                missing.append(f"{cur:%m/%d %H:%M}~{chunk_end:%m/%d %H:%M}")
                 break
 
             header = payload.get("response", {}).get("header", {})
             code = header.get("resultCode")
             if code not in (None, "00", "0"):
                 log(f"  [오류] {label} API 응답 {code}: {header.get('resultMsg')}")
-                complete = False
+                missing.append(f"{cur:%m/%d %H:%M}~{chunk_end:%m/%d %H:%M}"
+                               f" (응답 {code})")
                 break
 
             body = payload.get("response", {}).get("body", {})
@@ -442,7 +454,7 @@ def call_api(endpoint: str, key: str, begin: datetime, end: datetime,
             page += 1
         cur = chunk_end
 
-    return rows, complete
+    return rows, missing
 
 
 # ---------------------------------------------------------------------------
@@ -499,8 +511,8 @@ def license_chunks(begin: datetime, end: datetime) -> list[tuple[datetime, datet
 
 
 def build_license_index(key: str, begin: datetime, end: datetime,
-                        cache_dir: Path) -> tuple[dict, bool]:
-    """({공고번호-차수: (업종코드집합, 표시용문자열)}, 완전한지 여부)
+                        cache_dir: Path) -> tuple[dict, list[str]]:
+    """({공고번호-차수: (업종코드집합, 표시용문자열)}, 못 받은 구간 목록)
 
     조회량이 많아 (4개월이면 300회가 넘는다) 중간에 끊기기 쉽다.
     그래서 14일 구간마다 따로 캐시에 남긴다. 끊겨도 받아둔 구간은 남으므로
@@ -510,7 +522,7 @@ def build_license_index(key: str, begin: datetime, end: datetime,
     공고가 더 쌓이므로, 캐시해두면 오늘 새로 올라온 공고를 못 본다.
     """
     index: dict[str, tuple[set, str]] = {}
-    complete = True
+    missing: list[str] = []
     chunks = license_chunks(begin, end)
 
     for i, (c_begin, c_end) in enumerate(chunks, start=1):
@@ -533,13 +545,13 @@ def build_license_index(key: str, begin: datetime, end: datetime,
             except (json.JSONDecodeError, KeyError, TypeError, OSError):
                 cache.unlink(missing_ok=True)
 
-        rows, ok = call_api(LICENSE_ENDPOINT, key, c_begin, c_end,
-                            label=f"면허제한 {tag}")
+        rows, 빠짐 = call_api(LICENSE_ENDPOINT, key, c_begin, c_end,
+                             label=f"면허제한 {tag}")
         merge_license_rows(index, rows)
-        log(f"  [{tag}] {len(rows):,}건{'' if ok else '  ← 끊김'}")
+        log(f"  [{tag}] {len(rows):,}건{'' if not 빠짐 else '  ← 끊김'}")
 
-        if not ok:
-            complete = False
+        if 빠짐:
+            missing += 빠짐
             continue
         if closed:
             chunk_index: dict[str, tuple[set, list]] = {}
@@ -553,7 +565,82 @@ def build_license_index(key: str, begin: datetime, end: datetime,
             except OSError:
                 pass
 
-    return index, complete
+    return index, missing
+
+
+# ---------------------------------------------------------------------------
+# 조회 기록 — '신규 0건' 과 '자동수집 실패' 를 갈라 보기 위한 것
+#
+# 0건 메일과 실패 메일이 똑같이 생기면, API 가 죽은 날에도 받는 사람은
+# '오늘은 공고가 없었구나' 로 읽는다. 그게 곧 입찰 누락이다.
+#
+# 특히 위험한 것은 완전 실패가 아니라 부분 실패다. 한 구간만 못 받아도
+# 메일은 '오늘 3건' 이라고 멀쩡히 나가지만 사실은 '10건 중 3건' 일 수 있다.
+# 그래서 조회마다 성공·실패와 못 받은 구간을 남기고, 그 결과로 회차 상태를
+# 정상 / 일부실패 / 완전실패 셋으로 가른다.
+# ---------------------------------------------------------------------------
+
+CHECK_LOG = "_조회기록.csv"     # 회차마다 한 줄씩 쌓이는 성공·실패 기록
+
+정상, 일부실패, 완전실패 = "정상", "일부실패", "완전실패"
+
+
+def check(이름: str, 건수: int, 빠짐: list[str], 필수: bool = True) -> dict:
+    """조회 한 건의 결과. 필수=False 는 실패해도 회차를 실패로 보지 않는다."""
+    return {"이름": 이름, "건수": 건수, "빠짐": list(빠짐), "필수": 필수}
+
+
+def run_status(checks: list[dict]) -> str:
+    """회차 상태. 목록 조회가 전부 실패했으면 결과 자체를 믿을 수 없다."""
+    목록 = [c for c in checks if c["필수"]]
+    if 목록 and all(c["빠짐"] for c in 목록):
+        return 완전실패
+    return 일부실패 if any(c["빠짐"] for c in checks) else 정상
+
+
+def missing_phrase(checks: list[dict]) -> str:
+    """'용역 08/12 09:00~08/13 09:00 · 면허제한 08/11~08/12' 처럼 만든다."""
+    조각 = []
+    for c in checks:
+        for 구간 in c["빠짐"]:
+            조각.append(f"{c['이름']} {구간}")
+    return " · ".join(조각)
+
+
+def save_check_log(root: Path, checks: list[dict], status: str,
+                   수집건수: int, begin: datetime, end: datetime) -> None:
+    """회차별 조회 성공·실패를 한 파일에 쌓는다.
+
+    실행.log 는 회차마다 수십 줄이라 '지난 두 주 동안 몇 번 실패했나' 를
+    볼 수 없다. 한 줄짜리 기록이 따로 있어야 한다.
+    엑셀에서 바로 열리도록 BOM 을 붙인다.
+    """
+    path = root / CHECK_LOG
+    첫줄 = not path.exists()
+    try:
+        with open(path, "a", encoding="utf-8-sig", newline="") as f:
+            w = csv.writer(f)
+            if 첫줄:
+                w.writerow(["실행일시", "조회기간", "상태", "조회",
+                            "건수", "못받은구간", "수집건수"])
+            for c in checks:
+                w.writerow([RUN_STAMP,
+                            f"{begin:%Y-%m-%d %H:%M}~{end:%Y-%m-%d %H:%M}",
+                            status, c["이름"], c["건수"],
+                            " · ".join(c["빠짐"]), 수집건수])
+    except OSError as exc:
+        log(f"[주의] 조회기록을 남기지 못했습니다: {exc}")
+
+
+def rerun_command(begin: datetime, end: datetime) -> str:
+    """못 받은 구간을 다시 훑는 명령. 오류 메일에 그대로 넣는다.
+
+    조회 기간은 실행할 때마다 앞으로 밀린다. 오늘 놓친 공고는 내일 그냥
+    다시 돌려도 안 잡히므로, 그 회차를 재현하는 명령을 알려줘야 한다.
+    """
+    일수 = max(1, round((end - begin).total_seconds() / 86400))
+    앞 = "나라장터수집기.exe 수집" if FROZEN else "python 수집기.py"
+    return f'{앞} {일수} --기준 "{end:%Y-%m-%d %H:%M}"'
 
 
 # ---------------------------------------------------------------------------
@@ -1068,12 +1155,17 @@ def no_news_line(text: dict, when: datetime) -> str:
     return fill(text, "없음", 날짜=day_stamp(when))
 
 
-def mail_subject(cfg: dict, rows: list[list], when: datetime) -> str:
+def mail_subject(cfg: dict, rows: list[list], when: datetime,
+                 status: str = 정상) -> str:
     text = cfg["mail"]["문구"]
     stamp = day_stamp(when)
+    건수, 내역 = summary_parts(rows)
+    if status == 일부실패:
+        # 0건이어도 '없습니다' 라고 하면 안 된다. 못 본 것일 수 있다.
+        return fill(text, "제목_일부", 날짜=stamp, 건수=건수,
+                    내역=내역 or "수집 0건")
     if not rows:
         return fill(text, "제목_없음", 날짜=stamp)
-    건수, 내역 = summary_parts(rows)
     return fill(text, "제목", 날짜=stamp, 건수=건수, 내역=내역)
 
 
@@ -1110,8 +1202,12 @@ def as_html(line: str) -> str:
 
 
 def mail_html(rows: list[list], period: str, end: datetime, root: Path,
-              attached: list[Path], text: dict) -> str:
-    """본문 HTML. 아웃룩이 지원하는 범위(표 + 인라인 스타일)만 쓴다."""
+              attached: list[Path], text: dict, 빠짐: str = "") -> str:
+    """본문 HTML. 아웃룩이 지원하는 범위(표 + 인라인 스타일)만 쓴다.
+
+    빠짐 이 있으면 표보다 먼저 경고를 붙인다. 표를 다 읽고 맨 아래에서야
+    '실은 일부만 조회됐습니다' 를 보면 이미 판단이 끝난 뒤다.
+    """
     th = ("padding:6px 8px;border:1px solid #d0d0d0;background:#1f3864;"
           f"color:#fff;{BOLD};text-align:center;white-space:nowrap")
     td = "padding:6px 8px;border:1px solid #d0d0d0;vertical-align:top"
@@ -1121,9 +1217,19 @@ def mail_html(rows: list[list], period: str, end: datetime, root: Path,
     # 아웃룩은 pt 로 적어야 워드에서 보던 크기와 같게 나온다.
     parts = [f'<div style="font-family:{FONT};font-size:11pt;color:#222">']
 
+    if 빠짐:
+        경고 = fill(text, "실패알림", 빠짐=빠짐)
+        parts.append(
+            '<p style="margin:0 0 10px;padding:8px 10px;border:1px solid #c00000;'
+            f'background:#fdf0f0;color:#c00000;{BOLD}">'
+            f'{as_html(경고)}</p>')
+
     # 0건이면 한 줄만 보낸다. 조회기간·등급설명은 볼 표가 없으면 군더더기다.
-    if not rows:
+    if not rows and not 빠짐:
         parts.append(f'<p style="margin:0">{as_html(no_news_line(text, end))}</p>')
+    elif not rows:
+        parts.append('<p style="margin:0">조회된 신규 공고가 없습니다. '
+                     '다만 위 구간을 못 받았으므로 없다고 단정할 수 없습니다.</p>')
     else:
         건수, 내역 = summary_parts(rows)
         머리 = fill(text, "첫줄", 시각=f"{end:%Y.%m.%d %H:%M}", 기간=period)
@@ -1189,12 +1295,15 @@ def mail_html(rows: list[list], period: str, end: datetime, root: Path,
     return "\n".join(parts)
 
 
-def mail_text(rows: list[list], end: datetime, text: dict) -> str:
+def mail_text(rows: list[list], end: datetime, text: dict,
+              빠짐: str = "") -> str:
     """HTML 을 못 읽는 메일 앱을 위한 대체 본문."""
+    머리 = [fill(text, "실패알림", 빠짐=빠짐), ""] if 빠짐 else []
     if not rows:
-        return no_news_line(text, end)
+        본문 = "조회된 신규 공고가 없습니다." if 빠짐 else no_news_line(text, end)
+        return "\n".join(머리 + [본문])
     건수, 내역 = summary_parts(rows)
-    lines = [fill(text, "요약", 건수=건수, 내역=내역), ""]
+    lines = 머리 + [fill(text, "요약", 건수=건수, 내역=내역), ""]
     for no, r in enumerate(rows, start=1):
         kind = str(r[COL_KIND] or "")
         표시 = f"[{kind}] " if kind in KIND_COLOR else ""   # 신규는 굳이 안 적는다
@@ -1264,7 +1373,9 @@ def pick_attachments(cfg: dict, root: Path, pdfs: list[Path]) -> list[Path]:
 
 
 def send_via_outlook(cfg: dict, subject: str, html: str,
-                     attachments: list[Path]) -> bool:
+                     attachments: list[Path],
+                     to: list[str] | None = None,
+                     cc: list[str] | None = None) -> bool:
     """설치된 아웃룩으로 보낸다. 사내 메일 서버 정보가 필요 없다.
 
     로그인한 계정으로 나가므로 발신자가 본인 계정이 된다.
@@ -1281,12 +1392,14 @@ def send_via_outlook(cfg: dict, subject: str, html: str,
         return False
 
     m = cfg["mail"]
+    to = to or m["to"]
+    cc = m["cc"] if cc is None else cc
     try:
         outlook = win32com.client.Dispatch("Outlook.Application")
         item = outlook.CreateItem(0)          # 0 = olMailItem
-        item.To = "; ".join(m["to"])
-        if m["cc"]:
-            item.CC = "; ".join(m["cc"])
+        item.To = "; ".join(to)
+        if cc:
+            item.CC = "; ".join(cc)
         item.Subject = subject
         item.HTMLBody = html
         for p in attachments:
@@ -1305,13 +1418,17 @@ def send_via_outlook(cfg: dict, subject: str, html: str,
 
 
 def send_via_smtp(cfg: dict, subject: str, html: str, text: str,
-                  attachments: list[Path]) -> bool:
+                  attachments: list[Path],
+                  to: list[str] | None = None,
+                  cc: list[str] | None = None) -> bool:
     """사내 SMTP 릴레이로 보낸다. host·from 은 IT 에서 받아야 한다."""
     import mimetypes
     import smtplib
     from email.message import EmailMessage
 
     m = cfg["mail"]
+    to = to or m["to"]
+    cc = m["cc"] if cc is None else cc
     s = m["smtp"]
     host = str(s.get("host") or "").strip()
     sender = str(s.get("from") or s.get("user") or "").strip()
@@ -1322,9 +1439,9 @@ def send_via_smtp(cfg: dict, subject: str, html: str, text: str,
     msg = EmailMessage()
     msg["Subject"] = subject
     msg["From"] = sender
-    msg["To"] = ", ".join(m["to"])
-    if m["cc"]:
-        msg["Cc"] = ", ".join(m["cc"])
+    msg["To"] = ", ".join(to)
+    if cc:
+        msg["Cc"] = ", ".join(cc)
     msg.set_content(text)
     msg.add_alternative(html, subtype="html")
 
@@ -1351,13 +1468,79 @@ def send_via_smtp(cfg: dict, subject: str, html: str, text: str,
         return False
 
 
+def error_body(checks: list[dict], root: Path, begin: datetime,
+               end: datetime) -> tuple[str, str]:
+    """오류 메일 본문 (HTML, 글자만). 받는 사람은 담당자가 아니라 관리자다.
+
+    업무 문구가 아니라 진단 정보라서 config 의 문구로 빼지 않았다.
+    고칠 사람이 봐야 할 것만 적는다: 무엇이 실패했고, 어느 구간이 빠졌고,
+    무엇을 다시 돌리면 되는지.
+    """
+    줄 = [f"조회기간   {begin:%Y-%m-%d %H:%M} ~ {end:%Y-%m-%d %H:%M}",
+         f"실행시각   {RUN_STAMP}",
+         f"저장위치   {root}",
+         ""]
+    for c in checks:
+        상태 = "실패" if c["빠짐"] else "정상"
+        줄.append(f"[{상태}] {c['이름']}  {c['건수']:,}건")
+        for 구간 in c["빠짐"]:
+            줄.append(f"         못 받음: {구간}")
+    줄 += ["",
+          "이 회차에서 빠진 구간은 다음 실행 때 저절로 메워지지 않습니다.",
+          "조회기간이 실행할 때마다 앞으로 밀리기 때문입니다. 아래 명령으로",
+          "그 회차를 다시 돌려야 그 구간의 공고를 볼 수 있습니다.",
+          "",
+          f"    {rerun_command(begin, end)}",
+          "",
+          f"회차별 조회 성공·실패 기록: {root / CHECK_LOG}",
+          f"자세한 실행 기록: {LOG_DIR / '실행.log'}"]
+    text = "\n".join(줄)
+    html = (f'<div style="font-family:{FONT};font-size:11pt;color:#222">'
+            f'<p style="margin:0 0 10px;color:#c00000;{BOLD}">'
+            f'나라장터 자동수집이 완전하게 끝나지 않았습니다.</p>'
+            f'<pre style="margin:0;font-family:Consolas,monospace;'
+            f'font-size:10pt;background:#f7f7f7;border:1px solid #ddd;'
+            f'padding:10px;white-space:pre-wrap">{esc(text)}</pre></div>')
+    return html, text
+
+
+def notify_error(cfg: dict, checks: list[dict], root: Path,
+                 begin: datetime, end: datetime) -> None:
+    """조회가 통째로 실패한 회차를 관리자에게 알린다.
+
+    결과 메일은 보내지 않는다. 0건짜리 결과 메일이 나가면 받는 사람이
+    '오늘은 공고가 없었구나' 로 읽어버리기 때문이다. 그게 이 기능의 전부다.
+    """
+    m = cfg["mail"]
+    if not m["enabled"]:
+        return
+    받는이 = m["error_to"] or m["to"]
+    if not 받는이:
+        return
+    subject = fill(m["문구"], "제목_실패", 날짜=day_stamp(end))
+    html, text = error_body(checks, root, begin, end)
+
+    log(f"\n[오류메일] {m['mode']} · 수신 {', '.join(받는이)}")
+    if m["mode"] == "smtp":
+        ok = send_via_smtp(cfg, subject, html, text, [], to=받는이, cc=[])
+    else:
+        ok = send_via_outlook(cfg, subject, html, [], to=받는이, cc=[])
+    log(f"  {'보냈습니다' if ok else '보내지 못했습니다'}: {subject}")
+    if not ok:
+        # 메일 자체가 막혀 있으면 오류 메일도 못 나간다. 그때 마지막으로
+        # 남는 것이 로그와 조회기록 파일이다.
+        log("  [주의] 오류 메일도 나가지 못했습니다."
+            f" {root / CHECK_LOG} 를 확인하세요.")
+
+
 def notify(cfg: dict, rows: list[list], root: Path,
-           end: datetime, period: str) -> None:
+           end: datetime, period: str, 빠짐: str = "",
+           status: str = 정상) -> None:
     """수집 결과를 메일로 보낸다. 실패해도 수집 결과는 이미 저장돼 있다."""
     m = cfg["mail"]
     if not m["enabled"]:
         return
-    if not rows and not m["send_when_empty"]:
+    if not rows and not m["send_when_empty"] and not 빠짐:
         log("\n[메일] 신규 공고가 없어 보내지 않았습니다."
             " (mail.send_when_empty 로 바꿀 수 있습니다)")
         return
@@ -1369,9 +1552,9 @@ def notify(cfg: dict, rows: list[list], root: Path,
     if rows:
         pdfs = find_saved_pdfs(root, rows) if m["attach_pdf"] else []
         attachments = pick_attachments(cfg, root, pdfs)
-    subject = mail_subject(cfg, rows, end)
-    html = mail_html(rows, period, end, root, attachments, m["문구"])
-    text = mail_text(rows, end, m["문구"])
+    subject = mail_subject(cfg, rows, end, status)
+    html = mail_html(rows, period, end, root, attachments, m["문구"], 빠짐)
+    text = mail_text(rows, end, m["문구"], 빠짐)
 
     log(f"\n[메일] {m['mode']} · 수신 {', '.join(m['to'])}"
         + (f" · 참조 {', '.join(m['cc'])}" if m["cc"] else "")
@@ -1637,11 +1820,15 @@ def run(cfg: dict, sc: Scorer, root: Path, begin: datetime, end: datetime,
     seen = load_seen(seen_path)
 
     log("\n[1차] 면허제한 조회 중... (양이 많아 몇 분 걸립니다)")
-    lic_index, lic_ok = build_license_index(cfg["service_key"], begin, end, root)
+    lic_index, lic_빠짐 = build_license_index(cfg["service_key"], begin, end, root)
     n_hit = sum(1 for c, _ in lic_index.values() if c & set(cfg["industry_codes"]))
     log(f"  면허제한 있는 공고 {len(lic_index):,}건 · 그중 업종코드 일치 {n_hit:,}건")
-    if not lic_ok:
-        log("  [경고] 조회가 중간에 끊겨 일부만 받았습니다. S등급을 놓칠 수 있습니다.")
+    # 면허제한은 A 판정의 근거 하나일 뿐이라 이것만 끊겨도 수집은 돌아간다.
+    # 다만 A 를 놓칠 수 있으므로 회차는 '일부실패' 로 본다 (필수=False 는
+    # '이것만 실패해도 완전실패는 아니다' 라는 뜻이다).
+    조회기록 = [check("면허제한", len(lic_index), lic_빠짐, 필수=False)]
+    if lic_빠짐:
+        log("  [경고] 조회가 중간에 끊겨 일부만 받았습니다. A등급을 놓칠 수 있습니다.")
         log("         받아둔 구간은 캐시에 남았습니다. 같은 명령으로 다시 실행하면")
         log("         못 받은 구간부터 이어받습니다.")
 
@@ -1654,10 +1841,11 @@ def run(cfg: dict, sc: Scorer, root: Path, begin: datetime, end: datetime,
 
     for target in cfg["targets"]:
         log(f"\n[2차] {target} 조회 중...")
-        raws, ok = call_api(ENDPOINTS[target], cfg["service_key"], begin, end,
-                            label=target)
-        if not ok:
-            log(f"  [경고] {target} 조회가 완전하지 않습니다.")
+        raws, 빠짐 = call_api(ENDPOINTS[target], cfg["service_key"], begin, end,
+                             label=target)
+        조회기록.append(check(target, len(raws), 빠짐))
+        if 빠짐:
+            log(f"  [경고] {target} 조회가 완전하지 않습니다: {', '.join(빠짐)}")
         전체 += len(raws)
 
         live, n_취소, n_옛차수 = pick_live(raws)
@@ -1750,7 +1938,21 @@ def run(cfg: dict, sc: Scorer, root: Path, begin: datetime, end: datetime,
         log(f"\n[안내] 이제 검토 필요분(C)도 {COLLECT_XLSX} 에 함께 들어갑니다.")
         log(f"       예전 {OLD_REVIEW_XLSX} 은 더 쓰지 않으니 옮겨두거나 지우세요.")
 
-    notify(cfg, 결과, root, end, period_phrase(begin, end))
+    상태 = run_status(조회기록)
+    빠진구간 = missing_phrase(조회기록)
+    save_check_log(root, 조회기록, 상태, len(결과), begin, end)
+
+    if 상태 != 정상:
+        log(f"\n[조회 상태] {상태} — 못 받은 구간: {빠진구간}")
+        log(f"  다시 돌리려면:  {rerun_command(begin, end)}")
+
+    if 상태 == 완전실패:
+        # 결과 메일을 보내면 '오늘은 공고가 없었다' 로 읽힌다. 그것만은 막는다.
+        log("  [경고] 목록 조회가 모두 실패해 결과 메일을 보내지 않습니다.")
+        notify_error(cfg, 조회기록, root, begin, end)
+    else:
+        notify(cfg, 결과, root, end, period_phrase(begin, end),
+               빠진구간, 상태)
 
     if not 결과:
         log("\n조건에 맞는 공고가 없습니다.")

@@ -540,6 +540,12 @@ CONFIG_SCHEMA = [
          F("mail.문구.제목", "제목 (공고 있을 때)", "str",
            vars=["날짜", "건수", "내역"]),
          F("mail.문구.제목_없음", "제목 (0건일 때)", "str", vars=["날짜"]),
+         F("mail.문구.제목_일부", "제목 (일부 조회 실패)", "str",
+           vars=["날짜", "건수", "내역"]),
+         F("mail.문구.제목_실패", "제목 (자동수집 실패, 오류 메일)", "str",
+           vars=["날짜"]),
+         F("mail.문구.실패알림", "일부 실패했을 때 본문 맨 위 경고", "text",
+           vars=["빠짐"]),
          F("mail.문구.첫줄", "본문 첫 줄", "str", vars=["시각", "기간"]),
          F("mail.문구.요약", "표 위 요약", "str", vars=["건수", "내역"]),
          F("mail.문구.없음", "0건일 때 본문", "str", vars=["날짜"]),
@@ -768,16 +774,27 @@ def sample_rows(mod) -> list[list]:
     ]
 
 
-def mail_preview(values: dict, empty: bool) -> dict:
-    """저장하지 않은 지금 화면의 문구로 메일 한 통을 통째로 만들어 본다."""
+# 미리보기로 볼 수 있는 네 가지. 문구가 갈래마다 통째로 다르다.
+PREVIEW_MODES = ("정상", "0건", "일부실패", "오류")
+
+
+def mail_preview(values: dict, mode: str = "정상") -> dict:
+    """저장하지 않은 지금 화면의 문구로 메일 한 통을 통째로 만들어 본다.
+
+    실패 갈래도 여기서 볼 수 있어야 한다. 안 그러면 문구를 고쳐놓고
+    진짜 사고가 난 날에 처음 보게 된다.
+    """
     mod, err = collector()
     if mod is None:
         return {"ok": False,
                 "error": "미리보기는 수집기.py 를 불러올 수 있어야 합니다.\n" + err}
 
+    mode = mode if mode in PREVIEW_MODES else "정상"
     text = {k.rsplit(".", 1)[1]: v for k, v in values.items()
             if k.startswith("mail.문구.")}
-    rows = [] if empty else sample_rows(mod)
+    rows = [] if mode == "0건" else sample_rows(mod)
+    빠짐 = ("용역 07/01 09:00~07/02 09:00 · 면허제한 06/29~06/30"
+           if mode == "일부실패" else "")
 
     end = datetime.now(mod.KST)
     hours = int(values.get("hours") or 168)
@@ -787,16 +804,34 @@ def mail_preview(values: dict, empty: bool) -> dict:
     # 첨부 안내 줄도 설정을 따라간다. 켜둔 줄 모르고 있다가 메일에서 보는 것보다
     # 여기서 보이는 편이 낫다.
     attached: list[Path] = []
-    if rows and values.get("mail.attach_excel"):
+    if mode == "오류":
+        rows, attached = [], []
         attached.append(Path("공고목록.xlsx"))
     if rows and values.get("mail.attach_pdf"):
         attached += [Path(f"경찰공제회_대체투자자산 공정가치 평가·검증 용역_"
                           f"2026081400{i}.pdf") for i in (1, 2, 3)]
 
     with captured(mod) as msgs:
-        subject = mod.mail_subject({"mail": {"문구": text}}, rows, end)
-        html = mod.mail_html(rows, period, end, root, attached, text)
-    return {"ok": True, "subject": subject, "html": html, "warnings": msgs}
+        if mode == "오류":
+            # 오류 메일은 받는 사람도 내용도 다르다. 관리자에게 가는 진단문이다.
+            checks = [mod.check("면허제한", 0, ["06/29 18:00~07/02 18:00"],
+                                필수=False),
+                      mod.check("용역", 0, ["07/02 06:00~07/02 18:00 (응답 22)"])]
+            subject = mod.fill(text, "제목_실패", 날짜=mod.day_stamp(end))
+            html, _ = mod.error_body(checks, Path(root),
+                                     end - timedelta(hours=hours), end)
+        else:
+            상태 = mod.일부실패 if 빠짐 else mod.정상
+            subject = mod.mail_subject({"mail": {"문구": text}}, rows, end, 상태)
+            html = mod.mail_html(rows, period, end, root, attached, text, 빠짐)
+    받는이 = ""
+    if mode == "오류":
+        주소 = (values.get("mail.error_to") or values.get("mail.to") or "")
+        if isinstance(주소, list):
+            주소 = ", ".join(주소)
+        받는이 = str(주소)
+    return {"ok": True, "subject": subject, "html": html, "warnings": msgs,
+            "받는이": 받는이}
 
 
 # ===========================================================================
@@ -1344,7 +1379,7 @@ function bind(){
       markDirty();
     };
   });
-  const mp=$('#mailprev'); if(mp) mp.onclick=()=>mailPreview(false);
+  const mp=$('#mailprev'); if(mp) mp.onclick=()=>mailPreview('정상');
   document.querySelectorAll('[data-del]').forEach(b=>{
     b.onclick=()=>{
       const p=b.dataset.del;
@@ -1479,16 +1514,22 @@ function show(t,h,wide){
 // ---- 메일 미리보기 ------------------------------------------------------
 // 저장하지 않은 지금 화면의 문구로 수집기가 메일 한 통을 만들어 돌려준다.
 // 0건 메일은 문구가 통째로 달라 따로 봐야 한다.
-async function mailPreview(empty){
-  const r=await api('/api/mailpreview',{values:S.config.values,empty:!!empty});
+const MP_MODES=['정상','0건','일부실패','오류'];
+const MP_LABELS=['공고 3건 (A·B·C)','신규 0건','일부 조회 실패','자동수집 실패'];
+async function mailPreview(mode){
+  mode=MP_MODES.includes(mode)?mode:'정상';
+  const r=await api('/api/mailpreview',{values:S.config.values,mode:mode});
   if(!r.ok){show('메일 미리보기',`<p class=vwarn>${esc(r.error)}</p>`);return;}
   const warn=(r.warnings||[]).filter(x=>x.trim())
     .map(x=>`<div class="msg bad">${esc(x)}</div>`).join('');
   show('메일 미리보기',
     `<div style="margin-bottom:12px">`
-    +`<button class="tab${empty?'':' on'}" data-mp=0>공고 3건 (A·B·C)</button> `
-    +`<button class="tab${empty?' on':''}" data-mp=1>신규 0건</button></div>`
+    +MP_MODES.map((m,i)=>`<button class="tab${m===mode?' on':''}" `
+      +`data-mp=${i}>${MP_LABELS[i]}</button>`).join(' ')+`</div>`
     +warn
+    +(mode==='오류'
+      ?`<p class=dim style="margin:0 0 10px">조회가 통째로 실패한 회차에만 나갑니다.`
+       +` 받는 사람: <b>${esc(r.받는이||'(비어 있음)')}</b></p>`:'')
     +`<p class=dim style="margin:0 0 3px">제목</p>`
     +`<p style="margin:0 0 14px;font-weight:600">${esc(r.subject)}</p>`
     +`<p class=dim style="margin:0 0 3px">본문</p>`
@@ -1498,7 +1539,7 @@ async function mailPreview(empty){
     +` 표에 들어가는 값은 실제 수집 결과로 바뀝니다.</p>`, true);
   $('#mpf').srcdoc='<meta charset="utf-8"><body style="margin:12px;background:#fff">'+r.html;
   document.querySelectorAll('[data-mp]').forEach(b=>
-    b.onclick=()=>mailPreview(b.dataset.mp==='1'));
+    b.onclick=()=>mailPreview(MP_MODES[+b.dataset.mp]));
 }
 
 // ---- 실행 탭 ------------------------------------------------------------
@@ -1698,7 +1739,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(restore(req["file"]))
             if self.path == "/api/mailpreview":
                 return self._send(mail_preview(req["values"],
-                                               bool(req.get("empty"))))
+                                               str(req.get("mode") or "정상")))
             if self.path == "/api/run":
                 return self._send(start_run(list(req.get("args") or [])))
             if self.path == "/api/runstop":
