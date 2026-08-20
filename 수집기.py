@@ -2206,15 +2206,16 @@ def 시차보정(결과: list[list], seen: dict) -> int:
     for row in 결과:
         if str(row[COL_SRC] or SRC_G2B) != SRC_G2B or str(row[COL_DIFF] or ""):
             continue
-        키 = 정규화제목(str(row[COL_TITLE]))
         기관 = str(row[COL_DM] or row[COL_NT] or "")
+        키 = 정규화제목(str(row[COL_TITLE]), 기관)
         등록일 = str(row[COL_REG] or "")[:10]
         for 옛키, v in 옛것:
             if not _같은기관(기관, str(v.get("기관") or "")):
                 continue
             if not _가까운날(등록일, str(v.get("등록일") or "")):
                 continue
-            if 게시판.닮음(키, 정규화제목(str(v["공고명"]))) < 게시판.같음_컷:
+            if (게시판.닮음(키, 정규화제목(str(v["공고명"]), 기관))
+                    < 게시판.같음_컷):
                 continue
             채움 = " · ".join(x for x in (
                 f"마감 {row[COL_DUE]}" if row[COL_DUE] else "",
@@ -2231,8 +2232,9 @@ def 시차보정(결과: list[list], seen: dict) -> int:
     return 바꾼수
 
 
-def 정규화제목(t: str) -> str:
-    return 게시판.정규화(t) if 게시판 else t
+def 정규화제목(t: str, 기관: str = "") -> str:
+    """짝짓기용 제목. 기관 이름은 떼어낸다 (게시판.정규화 참고)."""
+    return 게시판.정규화(t, 기관) if 게시판 else t
 
 
 def _같은기관(a: str, b: str) -> bool:

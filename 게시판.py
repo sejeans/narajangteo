@@ -113,16 +113,22 @@ _잡음_클래스 = re.compile(r"\b(new|blind|hidden|skip|ico|icon|tag|label)\b"
 
 
 class 표읽기(HTMLParser):
-    """<tr> 마다 (칸 글자 목록, 그 줄에 있던 링크 문자열) 을 모은다.
+    """줄마다 (칸 글자 목록, 그 줄에 있던 링크 문자열) 을 모은다.
 
     어느 <table> 인지 고르지 않는다. 게시판 페이지에는 표가 여러 개 있고
     (레이아웃용 표, 검색 표) 어느 것이 목록인지는 사이트마다 다르다.
     대신 '번호찾기 정규식에 걸리는 링크를 가진 줄' 만 나중에 남긴다.
     그러면 표를 고를 필요가 없어진다.
+
+    줄과 칸이 무엇인지는 게시판마다 다르다. 표로 그린 곳이 많지만
+    <li> 안에 <div> 를 늘어놓는 곳도 있다 (새마을금고중앙회). 그래서
+    행태그·칸태그를 밖에서 받는다. 기본값은 표다.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, 행태그: str = "tr", 칸태그: str = "td,th") -> None:
         super().__init__(convert_charrefs=True)
+        self._행 = {t.strip().lower() for t in 행태그.split(",") if t.strip()}
+        self._칸태그 = {t.strip().lower() for t in 칸태그.split(",") if t.strip()}
         self.줄: list[tuple[list[str], str]] = []
         self._칸: list[str] = []
         self._글자: list[str] = []
@@ -139,10 +145,10 @@ class 표읽기(HTMLParser):
         if _잡음_클래스.search(a.get("class") or ""):
             self._건너뛰기 = 1
             return
-        if tag == "tr":
+        if tag in self._행:
             self._끝칸()
             self._칸, self._링크 = [], []
-        elif tag in ("td", "th"):
+        elif tag in self._칸태그:
             self._끝칸()
             self._칸안 = True
         # 링크는 <a href> 뿐 아니라 <span onclick="goView(...)"> 로도 온다.
@@ -154,9 +160,9 @@ class 표읽기(HTMLParser):
         if self._건너뛰기:
             self._건너뛰기 -= 1
             return
-        if tag in ("td", "th"):
+        if tag in self._칸태그:
             self._끝칸()
-        elif tag == "tr":
+        elif tag in self._행:
             self._끝칸()
             if self._칸:
                 self.줄.append((self._칸, " ".join(self._링크)))
@@ -174,8 +180,9 @@ class 표읽기(HTMLParser):
             self._칸안 = False
 
 
-def 표줄(html: str) -> list[tuple[list[str], str]]:
-    p = 표읽기()
+def 표줄(html: str, 행태그: str = "tr",
+       칸태그: str = "td,th") -> list[tuple[list[str], str]]:
+    p = 표읽기(행태그, 칸태그)
     try:
         p.feed(html)
         p.close()
@@ -203,6 +210,22 @@ def 날짜(글자: str) -> str:
         return ""
 
 
+# 제목 칸 끝에 딸려 오는 딱지. 아이콘에 붙은 대체텍스트(alt)나 화면에는
+# 안 보이게 숨겨둔 글자라 제목이 아니다. 그대로 두면 점수 계산과 짝짓기에
+# 다 섞인다. 아무 낱말이나 떼면 안 되므로 실제로 본 것만 적는다.
+_제목꼬리 = re.compile(r"[\s\-·]*(첨부파일|첨부|파일있음|파일|새글|NEW|New|new|"
+                    r"HOT|Hot|N|중요)$")
+
+
+def 제목정리(글자: str) -> str:
+    앞 = None
+    글자 = " ".join((글자 or "").split())
+    while 앞 != 글자:
+        앞 = 글자
+        글자 = _제목꼬리.sub("", 글자).strip()
+    return 글자
+
+
 def 칸(줄: list[str], 자리: int) -> str:
     """음수 자리(-1 = 맨 뒤)를 받는다. 날짜 칸은 대개 맨 뒤라 -1 이 편하다."""
     try:
@@ -225,6 +248,9 @@ class Board:
     번호찾기: str = r"goView\((\d+)"
     제목칸: int = 1
     날짜칸: int = -1
+    # 목록 한 줄과 그 안의 칸을 무엇으로 볼지. 표가 아니면 li,div 처럼 준다.
+    행태그: str = "tr"
+    칸태그: str = "td,th"
     제목제외: list[str] = field(default_factory=list)
     제목포함: list[str] = field(default_factory=list)
     사용: bool = True
@@ -296,7 +322,7 @@ def fetch(board: Board, begin: date | None = None, end: date | None = None,
 
     공고, 전체, 걸러냄 = [], 0, 0
     본_번호: set[str] = set()
-    for 칸들, 링크 in 표줄(본문):
+    for 칸들, 링크 in 표줄(본문, board.행태그, board.칸태그):
         m = 번호.search(링크)
         if not m:
             continue
@@ -304,7 +330,7 @@ def fetch(board: Board, begin: date | None = None, end: date | None = None,
         if no in 본_번호:        # 한 줄에 같은 링크가 두 번 걸린 게시판이 있다
             continue
         본_번호.add(no)
-        제목 = 칸(칸들, board.제목칸)
+        제목 = 제목정리(칸(칸들, board.제목칸))
         if not 제목:
             continue
         전체 += 1
@@ -436,15 +462,25 @@ _군더더기 = re.compile(
 _남길것 = re.compile(r"[0-9A-Za-z가-힣]+")
 
 
-def 정규화(제목: str) -> str:
+def 정규화(제목: str, 기관: str = "") -> str:
     """짝짓기용 제목. 사람이 읽을 값이 아니다.
 
     나라장터 '노란우산 광고제작 및 매체대행 용역'
     게시판   '[입찰공고] 노란우산 광고제작 및 매체대행'
     둘 다 '노란우산광고제작및매체대행' 이 된다.
+
+    기관 이름은 떼어낸다. 한쪽만 제목에 기관 이름을 적는 일이 아주 흔한데
+    그대로 두면 같은 공고가 안 닮은 것으로 나온다. 실제로 이것 때문에
+    '과학기술인공제회 위탁운용사 선정 정량평가 대행 용역'(나라장터)과
+    '위탁운용사 선정 정량평가 대행 용역'(게시판)이 갈렸다.
+    다 지워 빈 문자열이 되는 경우(제목이 기관 이름뿐)는 그냥 둔다.
     """
-    글 = _군더더기.sub(" ", 제목 or "")
-    return "".join(_남길것.findall(글))
+    키 = "".join(_남길것.findall(_군더더기.sub(" ", 제목 or "")))
+    if 기관:
+        기관키 = "".join(_남길것.findall(_군더더기.sub(" ", 기관)))
+        if 기관키 and 기관키 in 키 and len(키) > len(기관키):
+            키 = 키.replace(기관키, "")
+    return 키
 
 
 def 닮음(a: str, b: str) -> float:
@@ -489,8 +525,8 @@ def 짝짓기(사이트: list[dict], 나라: list[dict],
     것과 같은 원칙이다.
     """
     후보 = [r for r in 나라 if _기관같음(기관, r)]
-    s키 = [정규화(r.get("bidNtceNm") or "") for r in 사이트]
-    n키 = [정규화(r.get("bidNtceNm") or "") for r in 후보]
+    s키 = [정규화(r.get("bidNtceNm") or "", 기관) for r in 사이트]
+    n키 = [정규화(r.get("bidNtceNm") or "", 기관) for r in 후보]
 
     쌍 = []
     for i, r in enumerate(사이트):
