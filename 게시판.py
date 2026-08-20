@@ -130,11 +130,16 @@ class 표읽기(HTMLParser):
         super().__init__(convert_charrefs=True)
         self._행 = {t.strip().lower() for t in 행태그.split(",") if t.strip()}
         self._칸태그 = {t.strip().lower() for t in 칸태그.split(",") if t.strip()}
+        # 행태그를 칸태그에도 적어 두면, 줄 안에 또 나온 같은 태그를 새 줄이
+        # 아니라 그 줄의 칸으로 본다. <li> 줄 안에 <li> 로 등록일·조회수를
+        # 늘어놓는 게시판이 있다 (사학연금). 양쪽에 안 적으면 예전 그대로다.
+        self._겹침 = self._행 & self._칸태그
         self.줄: list[tuple[list[str], str]] = []
         self._칸: list[str] = []
         self._글자: list[str] = []
         self._링크: list[str] = []
         self._칸안 = False
+        self._깊이 = 0
         self._건너뛰기 = 0
 
     # -- 태그 --------------------------------------------------------------
@@ -146,10 +151,13 @@ class 표읽기(HTMLParser):
         if _잡음_클래스.search(a.get("class") or ""):
             self._건너뛰기 = 1
             return
-        if tag in self._행:
+        if tag in self._행 and not (tag in self._겹침 and self._깊이):
             self._끝칸()
             self._칸, self._링크 = [], []
+            self._깊이 = 1
         elif tag in self._칸태그:
+            if tag in self._겹침:
+                self._깊이 += 1
             self._끝칸()
             self._칸안 = True
         # 링크는 <a href> 뿐 아니라 <span onclick="goView(...)"> 로도 온다.
@@ -161,13 +169,17 @@ class 표읽기(HTMLParser):
         if self._건너뛰기:
             self._건너뛰기 -= 1
             return
-        if tag in self._칸태그:
+        if tag in self._칸태그 and not (tag in self._행
+                                     and self._깊이 <= 1):
+            if tag in self._겹침:
+                self._깊이 -= 1
             self._끝칸()
         elif tag in self._행:
             self._끝칸()
             if self._칸:
                 self.줄.append((self._칸, " ".join(self._링크)))
             self._칸, self._링크 = [], []
+            self._깊이 = 0
 
     def handle_data(self, data: str) -> None:
         if not self._건너뛰기 and self._칸안:
@@ -253,6 +265,14 @@ class Board:
     이름: str
     기관: str
     목록: str
+    # 목록을 양식(POST)으로만 주는 곳에 적는다. 적으면 GET 대신 POST 한다.
+    보냄: dict = field(default_factory=dict)
+    # 제목에서 수요기관을 뽑는 정규식(첫 괄호). 다른 기관 공고를 대신 실어
+    # 주는 게시판에 쓴다 (금융투자협회). 못 뽑으면 위 '기관' 을 쓴다.
+    기관찾기: str = ""
+    # 사람이 열어 볼 목록 화면. 목록 주소가 사람이 볼 화면이 아닐 때
+    # (양식으로만 주는 곳) 적는다. 상세 주소를 못 만들면 여기로 보낸다.
+    목록보기: str = ""
     상세: str = ""
     번호찾기: str = r"goView\((\d+)"
     제목칸: int = 1
@@ -292,13 +312,19 @@ class 결과:
     오류: str = ""
 
 
-def _받기(url: str, 알림) -> tuple[str, str]:
-    """(본문, 오류). 실패해도 예외를 올리지 않는다."""
+def _받기(url: str, 알림, 보냄: dict | None = None) -> tuple[str, str]:
+    """(본문, 오류). 실패해도 예외를 올리지 않는다.
+
+    보냄 이 있으면 GET 이 아니라 POST 로 부른다. 목록을 주소로는 못 열고
+    양식을 보내야만 주는 게시판이 있다 (한국지방재정공제회).
+    """
     머리 = {"User-Agent": UA, "Accept-Language": "ko"}
     for 회차 in range(1, MAX_RETRY + 1):
         try:
-            res = 세션().get(url, headers=머리, timeout=TIMEOUT,
-                            verify=인증서 is not False)
+            res = (세션().post(url, data=보냄, headers=머리, timeout=TIMEOUT,
+                              verify=인증서 is not False) if 보냄 else
+                   세션().get(url, headers=머리, timeout=TIMEOUT,
+                             verify=인증서 is not False))
             res.raise_for_status()
             # 옛 게시판은 아직 EUC-KR 이다. requests 가 ISO-8859-1 로 잘못
             # 찍어 두는 일이 있어 그때만 본문에서 다시 알아낸다.
@@ -332,7 +358,7 @@ def fetch(board: Board, begin: date | None = None, end: date | None = None,
     게시판 한 장에는 몇 달치가 한꺼번에 보이므로 자르지 않으면 처음 켠 날
     수십 건이 '신규' 로 쏟아진다. 그건 신규가 아니라 우리가 안 보던 것이다.
     """
-    본문, 오류 = _받기(board.목록, 알림)
+    본문, 오류 = _받기(board.목록, 알림, board.보냄 or None)
     if 오류:
         return 결과(board.이름, 오류=오류)
     if board.방식 == "json":
@@ -444,6 +470,15 @@ def _json_목록(board: Board, 본문: str, begin, end) -> 결과:
     return 결과(board.이름, 공고, 전체, 걸러냄)
 
 
+def _기관뽑기(board: Board, 제목: str) -> str:
+    """이 글의 수요기관. 기관찾기가 없으면 게시판의 기관 그대로다."""
+    if board.기관찾기:
+        m = re.search(board.기관찾기, 제목)
+        if m and (m.group(1) or "").strip():
+            return m.group(1).strip()
+    return board.기관
+
+
 def 레코드(board: Board, no: str, 제목: str, 등록일: str,
         추가: dict | None = None, 마감: str = "") -> dict:
     """나라장터 API 와 같은 모양. 없는 값은 빈 문자열이다.
@@ -452,12 +487,13 @@ def 레코드(board: Board, no: str, 제목: str, 등록일: str,
     게시판 목록에 없는 값을 지어내지 않는다. 메일에서 빈칸으로 보이는 편이
     틀린 값이 채워져 있는 것보다 낫다. 출처 칸이 그 빈칸을 설명한다.
     """
+    기관 = _기관뽑기(board, 제목)
     return {
         "bidNtceNo": no,
         "bidNtceNm": 제목,
         "bidNtceDt": 등록일,
-        "dminsttNm": board.기관,
-        "ntceInsttNm": board.기관,
+        "dminsttNm": 기관,
+        "ntceInsttNm": 기관,
         "bidNtceDtlUrl": 상세주소(board, no, 추가 or {}),
         # 목록에 날짜만 있고 시각은 없다. 시각을 지어내지 않는다.
         "bidClseDt": 마감,
@@ -477,12 +513,13 @@ def 상세주소(board: Board, no: str, 추가: dict) -> str:
     링크가 없는 행보다 목록으로 가는 링크가 낫다. 담당자가 거기서 제목으로
     찾을 수 있다.
     """
+    기본 = board.목록보기 or board.목록
     if not board.상세:
-        return board.목록
+        return 기본
     try:
-        return urljoin(board.목록, board.상세.format(**{"번호": no, **추가}))
+        return urljoin(기본, board.상세.format(**{"번호": no, **추가}))
     except (KeyError, IndexError):
-        return board.목록
+        return 기본
 
 
 def load_boards(path: Path, 알림=print) -> list[Board]:
@@ -628,17 +665,30 @@ def 짝짓기(사이트: list[dict], 나라: list[dict],
     그만이지만 잘못 버리면 영영 모른다. 수집기가 취소·변경을 다시 알리는
     것과 같은 원칙이다.
     """
-    후보 = [r for r in 나라 if _기관같음(기관, r)]
-    s키 = [정규화(r.get("bidNtceNm") or "", 기관) for r in 사이트]
-    n키 = [정규화(r.get("bidNtceNm") or "", 기관) for r in 후보]
+    # 기관은 줄마다 다를 수 있다. 다른 기관 공고를 대신 실어 주는 게시판
+    # (금융투자협회) 때문이다. 게시판 하나로 뭉뚱그리면 그런 줄은 후보를
+    # 통째로 잘못 걸러 짝을 못 찾고, 같은 공고가 메일에 두 번 실린다.
+    # 기관 이름은 대개 몇 가지뿐이라 기관별로 한 번만 계산해 둔다.
+    풀: dict[str, tuple[list[int], list[str]]] = {}
+
+    def 후보풀(이름: str) -> tuple[list[int], list[str]]:
+        if 이름 not in 풀:
+            자리 = [j for j, q in enumerate(나라) if _기관같음(이름, q)]
+            풀[이름] = (자리, [정규화(나라[j].get("bidNtceNm") or "", 이름)
+                            for j in 자리])
+        return 풀[이름]
 
     쌍 = []
     for i, r in enumerate(사이트):
-        for j, q in enumerate(후보):
+        이름 = str(r.get("dminsttNm") or "").strip() or 기관
+        자리, n키 = 후보풀(이름)
+        s키 = 정규화(r.get("bidNtceNm") or "", 이름)
+        for 몇, j in enumerate(자리):
+            q = 나라[j]
             if not _날짜가까움(str(r.get("bidNtceDt") or ""),
                           str(q.get("bidNtceDt") or "")):
                 continue
-            점 = 닮음(s키[i], n키[j])
+            점 = 닮음(s키, n키[몇])
             if 점 >= 애매_컷:
                 쌍.append((점, i, j))
 
@@ -657,7 +707,7 @@ def 짝짓기(사이트: list[dict], 나라: list[dict],
             판정.append(("사이트", None, 0.0))
             continue
         j, 점 = 맞춤[i]
-        판정.append((("양쪽" if 점 >= 같음_컷 else "애매"), 후보[j], 점))
+        판정.append((("양쪽" if 점 >= 같음_컷 else "애매"), 나라[j], 점))
     return 판정
 
 
