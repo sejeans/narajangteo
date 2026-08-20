@@ -16,7 +16,7 @@ narajangteo.py + 정밀수집.py + 목록만_추출.py 를 하나로 합친 것.
 (게시판.py / 게시판.yaml, config.yaml 의 sites.enabled 로 켠다). 그쪽은
 면허제한도 공고문 PDF 도 없어 공고명 점수만으로 판정하므로 전부 C 다.
 같은 공고가 양쪽에 올라온 경우가 대부분(실측 86%)이라 나라장터 행만 남기고
-'출처' 칸을 나라장터 / 양쪽 / 사이트 셋으로 갈라 적는다.
+'출처' 칸을 세 가지로 갈라 적는다 — 나라장터 / 나라장터+사이트(두 줄) / 사이트.
 
 정확도 A/B/C 는 1·4차(키워드 일치) / 5차(일부 일치) / 6차(검토 필요) 다.
 
@@ -135,31 +135,43 @@ COL_STAMP = 18           # 수집일시 (한 회차는 값이 모두 같다)
 # 수집이력도 출처마다 따로 세어야 한다(이력키 참고). 그때 컬럼을 새로 넣으면
 # 이미 쌓인 엑셀을 다 옮겨야 해서 지금 한 칸 잡아둔다.
 SRC_G2B = "나라장터"
-# 출처는 세 가지다. 지금 나오는 값은 SRC_G2B 하나뿐이고, 기관 자체 홈페이지를
-# 붙이면 나머지 둘이 쓰인다 (요구사항/크롤링계획.md 4번).
-#   나라장터  나라장터에서만 받은 공고. '기관 홈페이지에 없다' 가 아니라
-#             '우리가 보는 게시판에서는 못 찾았다' 는 뜻이다. 아직 안 붙인
-#             게시판·꺼둔 게시판·그날 조회가 실패한 게시판 것도 여기로 온다.
-#   양쪽      나라장터와 기관 홈페이지에 모두 올라온 공고. 행은 값이 더 많은
-#             나라장터 쪽을 남기고 라벨만 이걸로 적는다.
-#   사이트    기관 홈페이지에만 있어 나라장터에는 없는 공고.
-#             크롤링으로 새로 얻는 것이 이것뿐이다.
-SRC_BOTH = "양쪽"
+# 출처는 세 가지다 (요구사항/크롤링계획.md 4번).
+#
+#   나라장터        나라장터에서만 받은 공고. '기관 홈페이지에 없다' 가 아니라
+#                   '우리가 보는 게시판에서는 못 찾았다' 는 뜻이다. 아직 안
+#                   붙인 게시판·꺼둔 게시판·그날 조회가 실패한 게시판 것도
+#                   여기로 온다.
+#
+#   나라장터        나라장터와 기관 홈페이지에 모두 올라온 공고. 한 칸에 두
+#   사이트          줄로 적는다. 행은 값이 더 많은 나라장터 쪽을 남기고 라벨만
+#                   이걸로 바꾼다. 예전에는 '양쪽' 한 낱말이었는데, 그것만
+#                   보고는 어디어디에 있다는 뜻인지 안 읽힌다고 해서 둘 다
+#                   적기로 했다 (2026-08-20).
+#
+#   사이트          기관 홈페이지에만 있어 나라장터에는 없는 공고.
+#                   크롤링으로 새로 얻는 것이 이것뿐이다.
 SRC_SITE = "사이트"
+SRC_BOTH = f"{SRC_G2B}\n{SRC_SITE}"
+# 예전 엑셀에 쌓인 값. 지금은 안 쓰지만 읽을 줄은 알아야 한다 (이력출처 참고).
+SRC_BOTH_OLD = "양쪽"
 # 담당자가 할 일이 다른 것은 '사이트' 뿐이라 그것만 눈에 띄게 한다.
-# '양쪽' 과 '나라장터' 는 해야 할 일이 같아서 색을 주면 방해만 된다.
+# 두 줄짜리와 '나라장터' 는 해야 할 일이 같아서 색을 주면 방해만 된다.
 SRC_COLOR = {SRC_SITE: "#1F7A4D"}
 
 
 def 이력출처(출처: str) -> str:
-    """이력 열쇠에 쓸 출처. '양쪽' 은 나라장터로 되돌린다.
+    """이력 열쇠에 쓸 출처. 양쪽에 있는 건은 나라장터로 되돌린다.
 
     출처 칸은 '어디에 올라왔나' 를 말하고, 이력 열쇠는 '이 번호가 어느
-    체계의 번호인가' 를 말한다. 둘은 다르다. 나라장터 행에 '양쪽' 라벨이
-    붙었다고 열쇠까지 '양쪽:...' 으로 바뀌면, 다음 회차에 같은 공고를
-    처음 보는 것으로 여겨 신규로 또 알린다.
+    체계의 번호인가' 를 말한다. 둘은 다르다. 나라장터 행에 두 줄짜리 라벨이
+    붙었다고 열쇠까지 그걸로 바뀌면, 다음 회차에 같은 공고를 처음 보는
+    것으로 여겨 신규로 또 알린다.
+
+    옛 라벨('양쪽')도 같이 받는다. 라벨을 바꾸기 전에 쌓인 엑셀을 --메일만
+    으로 다시 읽는 일이 있는데, 그때 열쇠가 갈리면 지난 공고가 신규로
+    되살아난다.
     """
-    return SRC_G2B if 출처 in (SRC_BOTH, "") else 출처
+    return SRC_G2B if 출처 in (SRC_BOTH, SRC_BOTH_OLD, "") else 출처
 
 # 컬럼 구성은 몇 번 바뀌었고 앞으로도 바뀐다. --메일만 은 그 전에 쌓아둔
 # 엑셀도 읽을 수 있어야 해서, 자리(몇 번째 칸)가 아니라 첫 줄에 적힌 이름을
@@ -1238,6 +1250,10 @@ def append_rows(path: Path, rows: list[list]) -> bool:
         for cell in (r[COL_BUDGET], r[COL_PRICE]):
             cell.number_format = "#,##0"
             cell.alignment = Alignment(horizontal="right")
+        # 양쪽에 다 있는 건은 '나라장터' 와 '사이트' 를 한 칸에 두 줄로 적는다.
+        # wrap_text 를 안 켜면 엑셀이 줄바꿈 문자를 무시하고 한 줄로 붙여 버린다.
+        r[COL_SRC].alignment = Alignment(horizontal="center",
+                                         vertical="center", wrap_text=True)
         if r[COL_LINK].value:
             r[COL_LINK].hyperlink = r[COL_LINK].value
             r[COL_LINK].value = "공고 열기"
@@ -1320,7 +1336,8 @@ def src_tag(row: list) -> str:
     줄만 길어지고 정작 눈에 띄어야 할 '사이트' 가 묻힌다.
     """
     src = str(row[COL_SRC] or SRC_G2B)
-    return "" if src == SRC_G2B else f"[{src}] "
+    # 표가 아니라 한 줄짜리 글이라 줄바꿈을 못 쓴다. 가운뎃점으로 잇는다.
+    return "" if src == SRC_G2B else f"[{src.replace(chr(10), '·')}] "
 
 
 def esc(text) -> str:
@@ -1332,6 +1349,15 @@ def esc(text) -> str:
     return (str(text or "")
             .replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
             .replace('"', "&quot;"))
+
+
+def esc_src(src: str) -> str:
+    """출처 칸을 메일 표에 넣는다. 두 줄짜리는 한 칸 안에서 줄을 바꾼다.
+
+    양쪽에 다 있는 건은 '나라장터' 와 '사이트' 를 위아래로 적는다.
+    엑셀에서는 줄바꿈 문자 그대로, 메일에서는 <br> 로 나간다.
+    """
+    return "<br>".join(esc(줄) for 줄 in str(src or "").split("\n"))
 
 
 def won(value) -> str:
@@ -1481,7 +1507,7 @@ def change_table(rows: list[list], th: str, td: str, text: dict) -> list[str]:
             f'<td style="{td};text-align:center;white-space:nowrap;'
             f'color:{color};{BOLD}">{esc(kind)}</td>'
             f'<td style="{td};text-align:center;white-space:nowrap;'
-            f'color:{SRC_COLOR.get(src, "#888")}">{esc(src)}</td>'
+            f'color:{SRC_COLOR.get(src, "#888")}">{esc_src(src)}</td>'
             f'<td style="{td}">{esc(r[COL_DM] or r[COL_NT] or "기관미상")}</td>'
             f'<td style="{td};max-width:360px">{title}</td>'
             f'<td style="{td};color:#c00000;max-width:300px">'
@@ -1520,7 +1546,7 @@ def new_table(rows: list[list], th: str, td: str) -> list[str]:
             f'<td style="{td};text-align:center;white-space:nowrap;'
             f'color:{kind_color}">{esc(kind)}</td>'
             f'<td style="{td};text-align:center;white-space:nowrap;'
-            f'color:{SRC_COLOR.get(src, "#888")}">{esc(src)}</td>'
+            f'color:{SRC_COLOR.get(src, "#888")}">{esc_src(src)}</td>'
             f'<td style="{td};white-space:nowrap">{esc(r[COL_REG])}</td>'
             f'<td style="{td}">{esc(org)}</td>'
             f'<td style="{td};max-width:420px">{title}</td>'
@@ -2092,7 +2118,7 @@ def collect_sites(cfg: dict, sc: Scorer, seen: dict, 나라전체: list[dict],
 
     나라장터 루프가 끝난 뒤에 돈다. 같은 회차의 나라장터 결과가 손에 있어야
     겹치는 건을 버릴 수 있다. 결과 목록(결과)은 여기서 직접 고친다.
-    겹친 나라장터 행의 출처 라벨을 '양쪽' 으로 바꿔야 하기 때문이다.
+    겹친 나라장터 행의 출처 라벨을 두 줄짜리로 바꿔야 하기 때문이다.
     """
     if not cfg["sites"]["enabled"]:
         return []
@@ -2139,7 +2165,8 @@ def collect_sites(cfg: dict, sc: Scorer, seen: dict, 나라전체: list[dict],
         log(f"  {b.이름} 목록 {r.전체}건"
             f"{f' (제목필터로 {r.걸러냄}건 뺌)' if r.걸러냄 else ''}"
             f" → 기간 안 {len(r.공고)}건"
-            f" → 양쪽 {셈['양쪽']}건 · 사이트만 {셈['사이트'] + 셈['애매']}건"
+            f" → 나라장터에도 있음 {셈['양쪽']}건"
+            f" · 사이트에만 {셈['사이트'] + 셈['애매']}건"
             f" → 검토로 올림 {올림}건")
         if 셈["애매"]:
             log(f"    애매 {셈['애매']}건은 버리지 않고 그대로 올렸습니다"
@@ -2153,7 +2180,7 @@ def collect_sites(cfg: dict, sc: Scorer, seen: dict, 나라전체: list[dict],
 
 
 def mark_both(짝: dict, 결과: list[list], seen: dict) -> None:
-    """겹친 나라장터 건에 '양쪽' 라벨을 단다. 사이트 행은 버린다.
+    """겹친 나라장터 건에 두 줄짜리 출처 라벨을 단다. 사이트 행은 버린다.
 
     남기는 쪽이 나라장터인 이유는 값이 더 많아서다. 마감일시·배정예산·
     추정가격·공고번호·면허제한을 다 갖고 있고 사이트 행은 그중 아무것도
