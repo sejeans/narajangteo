@@ -12,6 +12,12 @@ narajangteo.py + 정밀수집.py + 목록만_추출.py 를 하나로 합친 것.
   5차  PDF 키워드 없지만 13점 이상 → 수집                            [B]
   6차  PDF 키워드 없고 7~12점 → 같은 엑셀에 검토 필요로 표시          [C]
 
+나라장터에 안 올라오는 공고는 기관 자체 홈페이지 게시판에서 따로 읽는다
+(게시판.py / 게시판.yaml, config.yaml 의 sites.enabled 로 켠다). 그쪽은
+면허제한도 공고문 PDF 도 없어 공고명 점수만으로 판정하므로 전부 C 다.
+같은 공고가 양쪽에 올라온 경우가 대부분(실측 86%)이라 나라장터 행만 남기고
+'출처' 칸을 나라장터 / 양쪽 / 사이트 셋으로 갈라 적는다.
+
 정확도 A/B/C 는 1·4차(키워드 일치) / 5차(일부 일치) / 6차(검토 필요) 다.
 
 결과물은 엑셀 하나와 공고문 PDF 뿐이다 (요구사항_v2·v3).
@@ -69,6 +75,15 @@ HERE = app_dir()
 if not FROZEN:
     sys.path.insert(0, str(HERE))
 from 점수 import Scorer  # noqa: E402
+
+try:
+    import 게시판                                            # noqa: E402
+except Exception as _exc:      # noqa: BLE001
+    # 게시판 조회는 곁가지다. 이것 때문에 나라장터 수집까지 못 돌면 안 된다.
+    게시판 = None
+    게시판_못읽음 = f"{type(_exc).__name__}: {_exc}"
+else:
+    게시판_못읽음 = ""
 
 KST = timezone(timedelta(hours=9))
 CONFIG_PATH = HERE / "config.yaml"
@@ -134,6 +149,17 @@ SRC_SITE = "사이트"
 # 담당자가 할 일이 다른 것은 '사이트' 뿐이라 그것만 눈에 띄게 한다.
 # '양쪽' 과 '나라장터' 는 해야 할 일이 같아서 색을 주면 방해만 된다.
 SRC_COLOR = {SRC_SITE: "#1F7A4D"}
+
+
+def 이력출처(출처: str) -> str:
+    """이력 열쇠에 쓸 출처. '양쪽' 은 나라장터로 되돌린다.
+
+    출처 칸은 '어디에 올라왔나' 를 말하고, 이력 열쇠는 '이 번호가 어느
+    체계의 번호인가' 를 말한다. 둘은 다르다. 나라장터 행에 '양쪽' 라벨이
+    붙었다고 열쇠까지 '양쪽:...' 으로 바뀌면, 다음 회차에 같은 공고를
+    처음 보는 것으로 여겨 신규로 또 알린다.
+    """
+    return SRC_G2B if 출처 in (SRC_BOTH, "") else 출처
 
 # 컬럼 구성은 몇 번 바뀌었고 앞으로도 바뀐다. --메일만 은 그 전에 쌓아둔
 # 엑셀도 읽을 수 있어야 해서, 자리(몇 번째 칸)가 아니라 첫 줄에 적힌 이름을
@@ -332,9 +358,21 @@ def load_config() -> dict:
         sys.exit(f"targets 가 잘못됐습니다. 사용 가능: {', '.join(ENDPOINTS)}")
     cfg["industry_codes"] = [str(c).strip()
                              for c in (cfg.get("industry_codes") or ["3865"])]
+    cfg["sites"] = load_sites_config(cfg.get("sites"))
     cfg["output_dir"] = resolve_output_dir(str(cfg.get("output_dir") or "./수집결과"))
     cfg["mail"] = load_mail_config(cfg.get("mail"))
     return cfg
+
+
+def load_sites_config(raw) -> dict:
+    """기관 자체 게시판 조회 설정.
+
+    켜고 끄는 스위치만 여기 둔다. 어느 게시판을 볼지·주소가 무엇인지는
+    게시판.yaml 에 있다. 게시판이 늘 때마다 config.yaml 을 고치게 하면
+    두 파일이 어긋난다.
+    """
+    m = dict(raw or {})
+    return {"enabled": bool(m.get("enabled", False))}
 
 
 def as_list(value) -> list[str]:
@@ -1072,6 +1110,9 @@ def first_snapshot(raw: dict) -> dict:
             "마감": deadline(raw),
             "예산": money(raw.get("asignBdgtAmt")),
             "공고명": (raw.get("bidNtceNm") or "").strip(),
+            "기관": (raw.get("dminsttNm") or raw.get("ntceInsttNm") or "").strip(),
+            "등록일": (raw.get("bidNtceDt") or "")[:10],
+            "출처": SRC_G2B,
             "정확도": "", "점수": 0, "본때": RUN_STAMP}
 
 
@@ -1084,6 +1125,12 @@ def snapshot(row: list, 차수: int) -> dict:
             "마감": str(row[COL_DUE] or ""),
             "예산": row[COL_BUDGET] if isinstance(row[COL_BUDGET], int) else "",
             "공고명": str(row[COL_TITLE] or ""),
+            # 기관·등록일·출처는 다음 회차에 '같은 공고인가' 를 가릴 때 쓴다.
+            # 사이트에 먼저 뜨고 나라장터에 며칠 뒤 뜨는 공고를 잡으려면
+            # 지난 회차 제목만으로는 모자라고 어느 기관 것인지가 있어야 한다.
+            "기관": str(row[COL_DM] or row[COL_NT] or ""),
+            "등록일": str(row[COL_REG] or "")[:10],
+            "출처": str(row[COL_SRC] or SRC_G2B),
             "정확도": str(row[COL_GRADE] or ""),
             "점수": row[COL_SCORE] if isinstance(row[COL_SCORE], int) else 0,
             "본때": str(row[COL_STAMP] or "")}
@@ -1933,6 +1980,275 @@ def mail_only(cfg: dict, root: Path) -> int:
 
 
 # ---------------------------------------------------------------------------
+# 기관 자체 게시판 — 나라장터에 안 올라오는 공고
+#
+# 실측(7개 기관)에서 자체 사이트 106건 중 15건(14.2%)이 나라장터에 없었다.
+# 반대로 91건(86%)은 양쪽에 다 있었다. 겹치는 것이 정상이고 안 겹치는 것이
+# 예외다. 그래서 이 단계에서 제일 중요한 일은 긁어오는 것이 아니라
+# **겹치는 것을 버리는 것**이다. 안 버리면 새로 얻는 15건을 위해 중복 91건을
+# 같이 얻는다.
+#
+# 여기서 온 공고는 무조건 C(검토)다. A·B 를 만드는 두 근거(면허제한 업종코드,
+# 공고문 PDF 의 '채권평가회사')가 게시판에는 둘 다 없다. 제목 점수만 보고
+# 올리는 건에 A·B 를 주면 A·B 의 뜻이 흐려진다.
+# ---------------------------------------------------------------------------
+
+
+def 연속0건(root: Path, 이름: str, 횟수: int = 3) -> bool:
+    """이번 회차까지 쳐서 내리 횟수 번 0건이었는가.
+
+    부르는 쪽이 '이번 회차가 0건' 인 것을 이미 알고 부른다. 회차 기록은
+    이 회차가 끝나야 쓰이므로(save_check_log 는 맨 뒤다) 파일에서는 지난
+    회차만 세고, 이번 것은 부르는 쪽이 이미 센 것으로 친다.
+
+    게시판이 개편되면 조회는 200 으로 멀쩡히 성공하고 목록만 안 잡힌다.
+    실패가 아니라 '조용한 0건' 이라 아무도 모른 채 몇 달이 간다.
+    (건설근로자공제회 게시판이 6월 8일 이후 멈춰 있는 것 같은 상태다.)
+
+    회차 기록 CSV 를 그대로 읽는다. 상태 파일을 따로 두면 이력·설정과
+    함께 관리해야 할 파일이 하나 더 늘어난다.
+    여기서 세는 0건은 '기간 안에 든 공고 0건' 이 아니라 '목록에서 읽어낸 줄
+    0건' 이다. 게시판은 한 달에 몇 건뿐이라 기간 안 0건은 정상이다.
+    """
+    path = root / CHECK_LOG
+    if not path.exists():
+        return False
+    try:
+        with open(path, encoding="utf-8-sig", newline="") as f:
+            줄 = [r for r in csv.reader(f) if len(r) >= 5 and r[3] == 이름]
+    except OSError:
+        return False
+    지난 = 줄[-(횟수 - 1):] if 횟수 > 1 else []
+    return (len(지난) >= 횟수 - 1
+            and all((r[4] or "0").strip() == "0" for r in 지난))
+
+
+def 나라이력풀(seen: dict, begin: datetime, end: datetime,
+            이미본: set[str]) -> list[dict]:
+    """지난 회차에 이미 다룬 나라장터 공고를 짝짓기 후보로 되살린다.
+
+    게시판은 나라장터보다 하루 이틀 늦게 올리는 일이 흔하다. 그때 나라장터
+    쪽은 지난 회차에서 이미 처리돼 이번 회차 목록에 없다. 이력에 남겨둔
+    값으로 대신 견주지 않으면, 어제 메일로 보낸 그 공고를 오늘 '사이트' 로
+    한 번 더 보내게 된다.
+
+    기관·등록일이 없는 옛 이력 항목은 건너뛴다. 견줄 수가 없다.
+    """
+    풀 = []
+    시작 = (begin - timedelta(days=게시판.날짜폭)).strftime("%Y-%m-%d")
+    끝 = end.strftime("%Y-%m-%d")
+    for 키, v in seen.items():
+        출처, _, no = str(키).partition(":")
+        if 출처 != SRC_G2B or no in 이미본:
+            continue
+        등록일 = str(v.get("등록일") or "")
+        if not v.get("공고명") or not 등록일 or not (시작 <= 등록일 <= 끝):
+            continue
+        풀.append({"bidNtceNo": no, "bidNtceNm": v["공고명"],
+                   "bidNtceDt": 등록일, "dminsttNm": str(v.get("기관") or ""),
+                   "ntceInsttNm": "", "_이력키": 키})
+    return 풀
+
+
+def 사이트이력(seen: dict) -> list[tuple[str, dict]]:
+    """이력에 남아 있는 '사이트' 건. 시차 보정에 쓴다."""
+    return [(k, v) for k, v in seen.items()
+            if str(k).startswith(SRC_SITE + ":") and v.get("공고명")]
+
+
+def site_row(raw: dict, pts: int, 근거: str, 내역: str) -> list:
+    """게시판 공고 한 줄. 마감일시·예산·첨부는 빈칸으로 둔다.
+
+    목록에 없는 값을 지어내지 않는다. 메일에서 빈칸으로 보이는 편이 틀린
+    값이 채워져 있는 것보다 낫다. 왼쪽 '출처' 칸이 그 빈칸을 설명한다.
+    """
+    return ["C", "변경" if 내역 else notice_kind(raw), 내역,
+            (raw.get("bidNtceDt") or "")[:10],
+            (raw.get("dminsttNm") or "").strip(),
+            (raw.get("ntceInsttNm") or "").strip(),
+            (raw.get("bidNtceNm") or "").strip(),
+            "", "", "",
+            # '업무' 는 용역·물품·공사 구분인데 게시판은 알려주지 않는다.
+            "", pts, "-", 근거, 0, SRC_SITE,
+            (raw.get("bidNtceNo") or "").strip(),
+            (raw.get("bidNtceDtlUrl") or "").strip(), RUN_STAMP]
+
+
+def collect_sites(cfg: dict, sc: Scorer, seen: dict, 나라전체: list[dict],
+                   결과: list[list], root: Path,
+                  begin: datetime, end: datetime) -> list[dict]:
+    """[4차] 기관 자체 게시판. 조회 기록 목록을 돌려준다.
+
+    나라장터 루프가 끝난 뒤에 돈다. 같은 회차의 나라장터 결과가 손에 있어야
+    겹치는 건을 버릴 수 있다. 결과 목록(결과)은 여기서 직접 고친다.
+    겹친 나라장터 행의 출처 라벨을 '양쪽' 으로 바꿔야 하기 때문이다.
+    """
+    if not cfg["sites"]["enabled"]:
+        return []
+    if 게시판 is None:
+        log(f"\n[4차] 자체 게시판을 건너뜁니다 (게시판.py 를 못 읽었습니다: "
+            f"{게시판_못읽음})")
+        return []
+
+    boards = [b for b in 게시판.load_boards(HERE / 게시판.BOARDS_YAML, 알림=log)
+              if b.사용]
+    if not boards:
+        log(f"\n[4차] {게시판.BOARDS_YAML} 에 켜둔 게시판이 없습니다.")
+        return []
+
+    log(f"\n[4차] 자체 게시판 {len(boards)}곳 조회 중...")
+    이미본 = {no_of(r) for r in 나라전체}
+    이력풀 = 나라이력풀(seen, begin, end, 이미본)
+    나라후보 = 나라전체 + 이력풀
+    if 이력풀:
+        log(f"  대조 후보 {len(나라후보):,}건 (이번 회차 {len(나라전체):,}"
+            f" + 지난 회차 이력 {len(이력풀):,})")
+
+    기록 = []
+    for 차례, b in enumerate(boards):
+        if 차례:
+            time.sleep(게시판.SLEEP)   # 동시 요청을 하지 않는다
+        이름 = f"게시판:{b.이름}"
+        r = 게시판.fetch(b, begin.date(), end.date(), 알림=log)
+        기록.append(check(이름, r.전체, [r.오류] if r.오류 else [], 필수=False))
+        if r.오류:
+            log(f"  [실패] {b.이름} — {r.오류}")
+            continue
+
+        판정 = 게시판.짝짓기(r.공고, 나라후보, b.기관)
+        셈 = {"양쪽": 0, "애매": 0, "사이트": 0}
+        올림 = 0
+        for (어디, 짝, 점), raw in zip(판정, r.공고):
+            셈[어디] += 1
+            if 어디 == "양쪽":
+                mark_both(짝, 결과, seen)
+                continue
+            올림 += _site_one(raw, 어디, 점, sc, seen, 결과)
+
+        log(f"  {b.이름} 목록 {r.전체}건"
+            f"{f' (제목필터로 {r.걸러냄}건 뺌)' if r.걸러냄 else ''}"
+            f" → 기간 안 {len(r.공고)}건"
+            f" → 양쪽 {셈['양쪽']}건 · 사이트만 {셈['사이트'] + 셈['애매']}건"
+            f" → 검토로 올림 {올림}건")
+        if 셈["애매"]:
+            log(f"    애매 {셈['애매']}건은 버리지 않고 그대로 올렸습니다"
+                f" (근거 칸에 표시).")
+        if r.전체 == 0 and 연속0건(root, 이름):
+            log(f"  [경고] '{b.이름}' — 여러 회차째 목록이 0건입니다."
+                f" 조회는 성공했으니 게시판이 개편됐을 수 있습니다."
+                f" 주소와 제목칸·번호찾기를 확인하세요:")
+            log(f"         {b.목록}")
+    return 기록
+
+
+def mark_both(짝: dict, 결과: list[list], seen: dict) -> None:
+    """겹친 나라장터 건에 '양쪽' 라벨을 단다. 사이트 행은 버린다.
+
+    남기는 쪽이 나라장터인 이유는 값이 더 많아서다. 마감일시·배정예산·
+    추정가격·공고번호·면허제한을 다 갖고 있고 사이트 행은 그중 아무것도
+    없다. 바뀌는 것은 라벨뿐이다.
+    """
+    키 = 짝.get("_이력키")
+    if 키:                       # 지난 회차에 이미 보낸 건이라 이번 표에 없다
+        if 키 in seen:
+            seen[키]["출처"] = SRC_BOTH
+        return
+    no = no_of(짝)
+    for row in 결과:
+        if str(row[COL_NO]) == no and str(row[COL_SRC] or SRC_G2B) == SRC_G2B:
+            row[COL_SRC] = SRC_BOTH
+            return
+    # 표에 없으면 점수 미달로 버렸거나 값이 그대로라 안 알리는 건이다.
+    # 나라장터 쪽에서 버린 것을 사이트 쪽으로 되살릴 이유는 없다.
+
+
+def _site_one(raw: dict, 어디: str, 점: float, sc: Scorer,
+              seen: dict, 결과: list[list]) -> int:
+    """사이트에만 있는 공고 한 건을 판정해 결과에 넣는다. 넣었으면 1."""
+    title = (raw.get("bidNtceNm") or "").strip()
+    orgs = f"{raw.get('dminsttNm') or ''} {raw.get('ntceInsttNm') or ''}"
+    pts, hits = sc.score(title, orgs)
+    if pts < sc.review_cut(orgs):
+        return 0
+
+    키 = 이력키(SRC_SITE, no_of(raw))
+    이전 = seen.get(키)
+    내역 = ""
+    if 이전 is not None:
+        # 게시판은 마감일시·예산을 안 주므로 견줄 수 있는 것은 제목뿐이다.
+        내역 = diff_notice(이전, raw, 0)
+        if not 내역:
+            if not 이전:
+                seen[키] = first_snapshot(raw)
+            return 0
+
+    근거 = " · ".join(["게시판 공고(면허제한·공고문 확인 못 함)"] + hits)
+    if 어디 == "애매":
+        # 버리지 않는다. 중복은 보고 넘기면 그만이지만 잘못 버리면 영영 모른다.
+        근거 += f" · 나라장터에 비슷한 공고 있음(닮음 {점:.2f}) — 중복일 수 있습니다"
+    결과.append(site_row(raw, pts, 근거, 내역))
+    log(f"    [C]{' [변경]' if 내역 else ''} {raw.get('dminsttNm')}"
+        f" — {title[:44]}")
+    return 1
+
+
+def 시차보정(결과: list[list], seen: dict) -> int:
+    """사이트로 먼저 알린 공고가 나라장터에 뒤늦게 올라온 것을 잡는다.
+
+    안 잡으면 이력에 없는 번호라 '신규' 로 또 나간다. 잡으면 중복이 아니라
+    **비어 있던 값이 채워지는 두 번째 알림**이 된다. 사이트 건은 마감일시와
+    예산이 빈칸이었으니 담당자에게 오히려 필요한 알림이다.
+    """
+    옛것 = 사이트이력(seen)
+    if not 옛것:
+        return 0
+    바꾼수 = 0
+    for row in 결과:
+        if str(row[COL_SRC] or SRC_G2B) != SRC_G2B or str(row[COL_DIFF] or ""):
+            continue
+        키 = 정규화제목(str(row[COL_TITLE]))
+        기관 = str(row[COL_DM] or row[COL_NT] or "")
+        등록일 = str(row[COL_REG] or "")[:10]
+        for 옛키, v in 옛것:
+            if not _같은기관(기관, str(v.get("기관") or "")):
+                continue
+            if not _가까운날(등록일, str(v.get("등록일") or "")):
+                continue
+            if 게시판.닮음(키, 정규화제목(str(v["공고명"]))) < 게시판.같음_컷:
+                continue
+            채움 = " · ".join(x for x in (
+                f"마감 {row[COL_DUE]}" if row[COL_DUE] else "",
+                f"예산 {row[COL_BUDGET]:,}원"
+                if isinstance(row[COL_BUDGET], int) else "") if x)
+            row[COL_KIND] = "변경"
+            row[COL_SRC] = SRC_BOTH
+            row[COL_DIFF] = ("나라장터에 등록됨"
+                             + (f" ({채움})" if 채움 else ""))
+            seen.pop(옛키, None)   # 열쇠를 나라장터 쪽으로 옮긴다
+            옛것 = [x for x in 옛것 if x[0] != 옛키]
+            바꾼수 += 1
+            break
+    return 바꾼수
+
+
+def 정규화제목(t: str) -> str:
+    return 게시판.정규화(t) if 게시판 else t
+
+
+def _같은기관(a: str, b: str) -> bool:
+    return bool(a and b) and (a in b or b in a)
+
+
+def _가까운날(a: str, b: str) -> bool:
+    try:
+        d1 = datetime.strptime(a[:10], "%Y-%m-%d")
+        d2 = datetime.strptime(b[:10], "%Y-%m-%d")
+    except ValueError:
+        return False
+    return abs((d1 - d2).days) <= 게시판.날짜폭
+
+
+# ---------------------------------------------------------------------------
 # 판정 — 요구사항 1~6차
 # ---------------------------------------------------------------------------
 
@@ -2107,6 +2423,9 @@ def run(cfg: dict, sc: Scorer, root: Path, begin: datetime, end: datetime,
 
     # 수집분과 검토 필요분을 한 목록에 담는다 (요구사항_v3 회신 3번).
     결과: list[list] = []
+    # 자체 게시판 건을 대조할 상대. 결과가 아니라 조회한 것 전부를 모은다.
+    # 점수 미달로 버린 나라장터 건과 겹치는 사이트 건도 같이 버려야 한다.
+    나라전체: list[dict] = []
     처리됨: set = set()
     차수기록: dict[str, int] = {}   # 공고번호 → 이번에 본 차수 (이력에 남긴다)
     전체 = 0
@@ -2123,6 +2442,7 @@ def run(cfg: dict, sc: Scorer, root: Path, begin: datetime, end: datetime,
         전체 += len(raws)
 
         live, 취소목록, n_옛차수 = pick_live(raws)
+        나라전체 += live
 
         # 이미 보낸 공고는 건너뛴다. 다만 '그때와 값이 같을 때만' 이다.
         # 마감이 미뤄졌거나 예산이 바뀌었으면 다시 알려야 한다.
@@ -2225,13 +2545,22 @@ def run(cfg: dict, sc: Scorer, root: Path, begin: datetime, end: datetime,
                 if saved:
                     저장된_pdf.append(saved)
 
+    조회기록 += collect_sites(cfg, sc, seen, 나라전체, 결과, root, begin, end)
+
+    # 사이트로 먼저 알린 공고가 나라장터에 뒤늦게 올라온 것을 잡는다.
+    # 게시판을 안 쓰는 회차에는 사이트 이력이 없어 그냥 지나간다.
+    n_시차 = 시차보정(결과, seen) if 게시판 else 0
+    if n_시차:
+        log(f"\n  사이트로 먼저 알렸던 {n_시차}건이 나라장터에도 올라왔습니다."
+            f" 신규가 아니라 변경으로 알립니다.")
+
     # 처리한 것만 이력에 남긴다. 조회했지만 점수 미달로 버린 건은
     # 나중에 점수표를 고쳤을 때 다시 판정할 수 있어야 하므로 남기지 않는다.
     #
     # 번호만이 아니라 지금 값을 통째로 남긴다. 다음 회차에 이 값과 견줘
     # 무엇이 바뀌었는지 말하기 위해서다.
     for row in 결과:
-        키 = 이력키(str(row[COL_SRC] or SRC_G2B), str(row[COL_NO]))
+        키 = 이력키(이력출처(str(row[COL_SRC])), str(row[COL_NO]))
         if row[COL_KIND] == "취소":
             # 취소된 공고는 다시 살아나지 않는다. 이력에서 뺀다. 그대로 두면
             # 같은 번호가 조회될 때마다 취소 알림이 되풀이된다.

@@ -17,6 +17,7 @@ onedir(폴더째) 로 묶는다. onefile 로 하면 실행할 때마다 임시 �
 datas = [
     ("config.example.yaml", "."),
     ("점수표.yaml", "."),
+    ("게시판.yaml", "."),
 ]
 
 hiddenimports = [
@@ -26,6 +27,7 @@ hiddenimports = [
     "수집기",
     "편집기",
     "점수",
+    "게시판",
     "점수표_검증",
     # 아웃룩 발송용. 설치되어 있지 않으면 수집기가 알아서 건너뛴다.
     "win32com.client",
