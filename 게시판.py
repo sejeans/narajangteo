@@ -23,6 +23,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import ssl
 import sys
@@ -198,9 +199,17 @@ def 표줄(html: str, 행태그: str = "tr",
 _날짜 = re.compile(r"(\d{4})\s*[.\-/년]\s*(\d{1,2})\s*[.\-/월]\s*(\d{1,2})")
 
 
+_붙은날짜 = re.compile(r"^(\d{4})(\d{2})(\d{2})\d*$")
+
+
 def 날짜(글자: str) -> str:
-    """'2026.08.19' '2026-8-19' '2026년 8월 19일' → '2026-08-19'. 못 읽으면 ''."""
-    m = _날짜.search(글자 or "")
+    """'2026.08.19' '2026-8-19' '2026년 8월 19일' → '2026-08-19'. 못 읽으면 ''.
+
+    '20260803134608' 처럼 구분자 없이 붙여 쓴 것도 읽는다. API 로 받는
+    게시판이 이렇게 준다.
+    """
+    글자 = str(글자 or "").strip()
+    m = _붙은날짜.match(글자) or _날짜.search(글자)
     if not m:
         return ""
     y, mo, d = (int(x) for x in m.groups())
@@ -254,6 +263,14 @@ class Board:
     # 목록 한 줄과 그 안의 칸을 무엇으로 볼지. 표가 아니면 li,div 처럼 준다.
     행태그: str = "tr"
     칸태그: str = "td,th"
+    # '표' 면 HTML 을 읽고, 'json' 이면 JSON 을 읽는다.
+    방식: str = "표"
+    json찾기: str = ""       # HTML 안에 박힌 JSON 을 꺼내는 정규식 (첫 괄호)
+    json경로: str = ""       # 목록이 있는 자리. "body.list" 처럼 점으로 잇는다
+    제목키: str = ""
+    날짜키: str = ""
+    번호키: str = ""
+    마감키: str = ""
     제목제외: list[str] = field(default_factory=list)
     제목포함: list[str] = field(default_factory=list)
     사용: bool = True
@@ -318,6 +335,8 @@ def fetch(board: Board, begin: date | None = None, end: date | None = None,
     본문, 오류 = _받기(board.목록, 알림)
     if 오류:
         return 결과(board.이름, 오류=오류)
+    if board.방식 == "json":
+        return _json_목록(board, 본문, begin, end)
 
     번호 = re.compile(board.번호찾기)
     제외 = [re.compile(p) for p in board.제목제외]
@@ -356,6 +375,72 @@ def fetch(board: Board, begin: date | None = None, end: date | None = None,
             continue
         공고.append(레코드(board, no, 제목, 등록일, 추가, 마감))
 
+    return 결과(board.이름, 공고, 전체, 걸러냄)
+
+
+def _파고들기(값, 경로: str):
+    """{"body": {"list": [...]}} 에서 "body.list" 를 꺼낸다."""
+    for 조각 in (경로 or "").split("."):
+        if not 조각:
+            continue
+        if isinstance(값, dict):
+            값 = 값.get(조각)
+        elif isinstance(값, list) and 조각.isdigit():
+            값 = 값[int(조각)] if int(조각) < len(값) else None
+        else:
+            return None
+    return 값
+
+
+def _json_목록(board: Board, 본문: str, begin, end) -> 결과:
+    """목록을 JSON 으로 주는 게시판.
+
+    두 가지가 있다. 하나는 주소를 부르면 JSON 이 그대로 오는 것(한국예탁결제원),
+    다른 하나는 HTML 페이지 안에 `var bbsMap = {...}` 으로 박혀 있는 것
+    (대한지방행정공제회). 뒤엣것은 json찾기 정규식으로 먼저 꺼낸다.
+    """
+    글 = 본문
+    if board.json찾기:
+        m = re.search(board.json찾기, 본문, re.S)
+        if not m:
+            return 결과(board.이름,
+                      오류=f"페이지에서 목록 JSON 을 못 찾았습니다"
+                         f" (json찾기: {board.json찾기})")
+        글 = m.group(1)
+    try:
+        자료 = json.loads(글)
+    except json.JSONDecodeError as exc:
+        return 결과(board.이름, 오류=f"JSON 이 아닙니다: {exc}")
+
+    목록 = _파고들기(자료, board.json경로)
+    if not isinstance(목록, list):
+        return 결과(board.이름,
+                  오류=f"json경로 '{board.json경로}' 에 목록이 없습니다")
+
+    제외 = [re.compile(p) for p in board.제목제외]
+    포함 = [re.compile(p) for p in board.제목포함]
+    공고, 전체, 걸러냄 = [], 0, 0
+    for 항목 in 목록:
+        if not isinstance(항목, dict):
+            continue
+        제목 = 제목정리(str(항목.get(board.제목키) or ""))
+        no = str(항목.get(board.번호키) or "").strip()
+        if not 제목 or not no:
+            continue
+        전체 += 1
+        if 포함 and not any(p.search(제목) for p in 포함):
+            걸러냄 += 1
+            continue
+        if any(p.search(제목) for p in 제외):
+            걸러냄 += 1
+            continue
+        등록일 = 날짜(항목.get(board.날짜키))
+        if 등록일 and begin and 등록일 < f"{begin:%Y-%m-%d}":
+            continue
+        if 등록일 and end and 등록일 > f"{end:%Y-%m-%d}":
+            continue
+        마감 = 날짜(항목.get(board.마감키)) if board.마감키 else ""
+        공고.append(레코드(board, no, 제목, 등록일, {}, 마감))
     return 결과(board.이름, 공고, 전체, 걸러냄)
 
 
@@ -464,7 +549,15 @@ _군더더기 = re.compile(
     r"입찰\s*재?공고|재\s*공고|변경\s*공고|취소\s*공고|사업\s*공고|"
     r"입찰\s*공고|제안\s*요청서?|공고|긴급|"
     r"연구\s*용역|위탁\s*용역|일반\s*용역|용역|"
+    # 계약 방식은 같은 공고라도 한쪽만 적는 일이 많다.
+    r"제한\s*경쟁\s*입찰|일반\s*경쟁\s*입찰|지명\s*경쟁\s*입찰|"
+    r"협상에\s*의한\s*계약|수의\s*계약|전자\s*입찰|입찰\s*실시|"
     r"\d{4}\s*년도?|제?\s*\d+\s*차")
+# 제목 맨 앞의 [분류] 딱지. 한쪽만 붙이는 일이 아주 흔하다.
+#   [입찰공고] [사업공고] [전자소액수의] [한예 제2026-29호] (재공고) ...
+# 뜻을 지고 있는 것도 있지만(지역 이름 등) 짝짓기용 열쇠에서만 떼는 것이고,
+# 1:1 로 짝짓는데다 0.85 문턱이 있어 엉뚱한 짝이 생기지는 않는다.
+_머리딱지 = re.compile(r"^\s*[\[【(]\s*[^\]】)]{0,30}[\]】)]\s*")
 _남길것 = re.compile(r"[0-9A-Za-z가-힣]+")
 
 
@@ -481,7 +574,12 @@ def 정규화(제목: str, 기관: str = "") -> str:
     '위탁운용사 선정 정량평가 대행 용역'(게시판)이 갈렸다.
     다 지워 빈 문자열이 되는 경우(제목이 기관 이름뿐)는 그냥 둔다.
     """
-    키 = "".join(_남길것.findall(_군더더기.sub(" ", 제목 or "")))
+    글 = 제목 or ""
+    앞 = None
+    while 앞 != 글:            # [한예 제2026-29호] 처럼 두 겹인 것도 있다
+        앞 = 글
+        글 = _머리딱지.sub("", 글)
+    키 = "".join(_남길것.findall(_군더더기.sub(" ", 글)))
     if 기관:
         기관키 = "".join(_남길것.findall(_군더더기.sub(" ", 기관)))
         if 기관키 and 기관키 in 키 and len(키) > len(기관키):

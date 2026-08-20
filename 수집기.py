@@ -2005,6 +2005,10 @@ def 연속0건(root: Path, 이름: str, 횟수: int = 3) -> bool:
     실패가 아니라 '조용한 0건' 이라 아무도 모른 채 몇 달이 간다.
     (건설근로자공제회 게시판이 6월 8일 이후 멈춰 있는 것 같은 상태다.)
 
+    **한 번이라도 잡힌 적이 있는 게시판만** 경고한다. 처음부터 비어 있는
+    게시판(신용보증기금 유동화보증처럼)은 0건이 정상이라, 그것까지 경고하면
+    매 회차 늑대가 나타났다고 외치는 꼴이 된다.
+
     회차 기록 CSV 를 그대로 읽는다. 상태 파일을 따로 두면 이력·설정과
     함께 관리해야 할 파일이 하나 더 늘어난다.
     여기서 세는 0건은 '기간 안에 든 공고 0건' 이 아니라 '목록에서 읽어낸 줄
@@ -2018,9 +2022,16 @@ def 연속0건(root: Path, 이름: str, 횟수: int = 3) -> bool:
             줄 = [r for r in csv.reader(f) if len(r) >= 5 and r[3] == 이름]
     except OSError:
         return False
+    def 건수(r):
+        try:
+            return int((r[4] or "0").strip() or 0)
+        except ValueError:
+            return 0
+
+    if not any(건수(r) for r in 줄):
+        return False                  # 처음부터 비어 있던 게시판
     지난 = 줄[-(횟수 - 1):] if 횟수 > 1 else []
-    return (len(지난) >= 횟수 - 1
-            and all((r[4] or "0").strip() == "0" for r in 지난))
+    return len(지난) >= 횟수 - 1 and not any(건수(r) for r in 지난)
 
 
 def 나라이력풀(seen: dict, begin: datetime, end: datetime,
