@@ -248,6 +248,9 @@ class Board:
     번호찾기: str = r"goView\((\d+)"
     제목칸: int = 1
     날짜칸: int = -1
+    # 마감일시가 목록에 나오는 게시판이 드물게 있다(우체국금융개발원).
+    # 있으면 적어둔다. 없으면 그 칸은 빈칸으로 나간다.
+    마감칸: int | None = None
     # 목록 한 줄과 그 안의 칸을 무엇으로 볼지. 표가 아니면 li,div 처럼 준다.
     행태그: str = "tr"
     칸태그: str = "td,th"
@@ -345,17 +348,19 @@ def fetch(board: Board, begin: date | None = None, end: date | None = None,
         # 다른 게시판이 있어서 필요하다.
         추가 = {k: (v or "") for k, v in m.groupdict().items()}
         등록일 = 날짜(칸(칸들, board.날짜칸))
+        마감 = (날짜(칸(칸들, board.마감칸))
+              if board.마감칸 is not None else "")
         if 등록일 and begin and 등록일 < f"{begin:%Y-%m-%d}":
             continue
         if 등록일 and end and 등록일 > f"{end:%Y-%m-%d}":
             continue
-        공고.append(레코드(board, no, 제목, 등록일, 추가))
+        공고.append(레코드(board, no, 제목, 등록일, 추가, 마감))
 
     return 결과(board.이름, 공고, 전체, 걸러냄)
 
 
 def 레코드(board: Board, no: str, 제목: str, 등록일: str,
-        추가: dict | None = None) -> dict:
+        추가: dict | None = None, 마감: str = "") -> dict:
     """나라장터 API 와 같은 모양. 없는 값은 빈 문자열이다.
 
     빈 채로 두는 것: 마감일시·배정예산·추정가격·면허제한·첨부.
@@ -369,7 +374,8 @@ def 레코드(board: Board, no: str, 제목: str, 등록일: str,
         "dminsttNm": board.기관,
         "ntceInsttNm": board.기관,
         "bidNtceDtlUrl": 상세주소(board, no, 추가 or {}),
-        "bidClseDt": "",
+        # 목록에 날짜만 있고 시각은 없다. 시각을 지어내지 않는다.
+        "bidClseDt": 마감,
         "opengDt": "",
         "asignBdgtAmt": "",
         "presmptPrce": "",
