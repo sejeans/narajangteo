@@ -120,6 +120,20 @@ COL_STAMP = 18           # 수집일시 (한 회차는 값이 모두 같다)
 # 수집이력도 출처마다 따로 세어야 한다(이력키 참고). 그때 컬럼을 새로 넣으면
 # 이미 쌓인 엑셀을 다 옮겨야 해서 지금 한 칸 잡아둔다.
 SRC_G2B = "나라장터"
+# 출처는 세 가지다. 지금 나오는 값은 SRC_G2B 하나뿐이고, 기관 자체 홈페이지를
+# 붙이면 나머지 둘이 쓰인다 (요구사항/크롤링계획.md 4번).
+#   나라장터  나라장터에서만 받은 공고. '기관 홈페이지에 없다' 가 아니라
+#             '우리가 보는 게시판에서는 못 찾았다' 는 뜻이다. 아직 안 붙인
+#             게시판·꺼둔 게시판·그날 조회가 실패한 게시판 것도 여기로 온다.
+#   양쪽      나라장터와 기관 홈페이지에 모두 올라온 공고. 행은 값이 더 많은
+#             나라장터 쪽을 남기고 라벨만 이걸로 적는다.
+#   사이트    기관 홈페이지에만 있어 나라장터에는 없는 공고.
+#             크롤링으로 새로 얻는 것이 이것뿐이다.
+SRC_BOTH = "양쪽"
+SRC_SITE = "사이트"
+# 담당자가 할 일이 다른 것은 '사이트' 뿐이라 그것만 눈에 띄게 한다.
+# '양쪽' 과 '나라장터' 는 해야 할 일이 같아서 색을 주면 방해만 된다.
+SRC_COLOR = {SRC_SITE: "#1F7A4D"}
 
 # 컬럼 구성은 몇 번 바뀌었고 앞으로도 바뀐다. --메일만 은 그 전에 쌓아둔
 # 엑셀도 읽을 수 있어야 해서, 자리(몇 번째 칸)가 아니라 첫 줄에 적힌 이름을
@@ -1209,10 +1223,14 @@ FONT = ("'NICE 고딕Neo2유니 TTF 03 Rg','NICE GtNeo2Uni TTF 03 Rg',"
 FONT_SB = ("'NICE 고딕Neo2유니 TTF 05 Sb','NICE GtNeo2Uni TTF 05 Sb',"
            "'맑은 고딕','Malgun Gothic',sans-serif")
 BOLD = f"font-family:{FONT_SB};font-weight:normal"
-MAIL_HEADERS = ["구분", "정확도", "공고종류", "등록일", "수요기관", "공고명",
+# '출처' 를 왼쪽(등록일 앞)에 두는 이유: 기관 홈페이지에서 받은 공고는
+# 마감일시와 사업예산이 빈칸이다. 출처가 먼저 보여야 오른쪽 빈칸을 보고
+# '수집이 깨졌나' 하지 않는다.
+MAIL_HEADERS = ["구분", "정확도", "공고종류", "출처", "등록일", "수요기관", "공고명",
                 "마감일시", "사업예산", "검색 키워드"]
 # 변경·취소는 볼 것이 다르다. 점수나 키워드가 아니라 '무엇이 바뀌었나' 다.
-CHANGE_HEADERS = ["구분", "공고종류", "수요기관", "공고명", "변경내역", "마감일시"]
+CHANGE_HEADERS = ["구분", "공고종류", "출처", "수요기관", "공고명",
+                  "변경내역", "마감일시"]
 
 # 메일의 '사업예산' 은 배정예산금액(asignBdgtAmt)입니다. 부가세를 포함한,
 # 발주기관이 잡아둔 돈입니다. 입찰 기준이 되는 추정가격(부가세 제외)은
@@ -1220,7 +1238,9 @@ CHANGE_HEADERS = ["구분", "공고종류", "수요기관", "공고명", "변경
 
 # 점수 근거 중 '어떤 낱말에 걸렸는지' 를 알려주는 항목들.
 # '조합+4' '기관+3' 같은 계산 내역은 메일에 넣지 않는다.
-WHY_KEYWORD_TAGS = ("확정: ", "채권시장: ", "대상: ", "행위: ")
+# '운용전략: ' 이 빠져 있으면 strategy 로만 걸린 공고(예: 자산운용 컨설팅)의
+# 키워드 칸이 통째로 빈다. 왜 올라왔는지가 메일에 안 나온다.
+WHY_KEYWORD_TAGS = ("확정: ", "채권시장: ", "운용전략: ", "대상: ", "행위: ")
 
 
 def search_keywords(row: list) -> str:
@@ -1243,6 +1263,17 @@ def search_keywords(row: list) -> str:
     # 셋이 같이 걸린다. 짧은 쪽은 군더더기라 긴 낱말만 남긴다.
     keep = [w for w in found if not any(w != o and w in o for o in found)]
     return ", ".join(keep[:4])
+
+
+def src_tag(row: list) -> str:
+    """대체 본문(텍스트)에 붙일 출처 표시.
+
+    표가 없는 본문이라 칸을 만들 수 없다. '나라장터' 는 대부분이라 적지 않고,
+    기관 홈페이지가 얽힌 것만 앞에 붙인다. 매 줄에 '나라장터' 를 적으면
+    줄만 길어지고 정작 눈에 띄어야 할 '사이트' 가 묻힌다.
+    """
+    src = str(row[COL_SRC] or SRC_G2B)
+    return "" if src == SRC_G2B else f"[{src}] "
 
 
 def esc(text) -> str:
@@ -1396,11 +1427,14 @@ def change_table(rows: list[list], th: str, td: str, text: dict) -> list[str]:
             title = (f'<a href="{esc(r[COL_LINK])}" style="color:#0563c1">'
                      f'{title}</a>')
         마감 = "—" if 취소 else (esc(r[COL_DUE]) or "-")
+        src = str(r[COL_SRC] or SRC_G2B)
         parts.append(
             f'<tr style="{bg}">'
             f'<td style="{td};text-align:center;color:#888">{no}</td>'
             f'<td style="{td};text-align:center;white-space:nowrap;'
             f'color:{color};{BOLD}">{esc(kind)}</td>'
+            f'<td style="{td};text-align:center;white-space:nowrap;'
+            f'color:{SRC_COLOR.get(src, "#888")}">{esc(src)}</td>'
             f'<td style="{td}">{esc(r[COL_DM] or r[COL_NT] or "기관미상")}</td>'
             f'<td style="{td};max-width:360px">{title}</td>'
             f'<td style="{td};color:#c00000;max-width:300px">'
@@ -1427,6 +1461,7 @@ def new_table(rows: list[list], th: str, td: str) -> list[str]:
         title = esc(r[COL_TITLE])
         kind = str(r[COL_KIND] or "-")
         kind_color = KIND_COLOR.get(kind, "#888")
+        src = str(r[COL_SRC] or SRC_G2B)
         if r[COL_LINK]:
             title = (f'<a href="{esc(r[COL_LINK])}" style="color:#0563c1">'
                      f'{title}</a>')
@@ -1437,6 +1472,8 @@ def new_table(rows: list[list], th: str, td: str) -> list[str]:
             f'color:{color};{BOLD}">{esc(GRADE_LABEL.get(g, g))}</td>'
             f'<td style="{td};text-align:center;white-space:nowrap;'
             f'color:{kind_color}">{esc(kind)}</td>'
+            f'<td style="{td};text-align:center;white-space:nowrap;'
+            f'color:{SRC_COLOR.get(src, "#888")}">{esc(src)}</td>'
             f'<td style="{td};white-space:nowrap">{esc(r[COL_REG])}</td>'
             f'<td style="{td}">{esc(org)}</td>'
             f'<td style="{td};max-width:420px">{title}</td>'
@@ -1532,7 +1569,7 @@ def mail_text(rows: list[list], end: datetime, text: dict,
     if 바뀜:
         lines.append(fill(text, "변경머리", 건수=len(바뀜)))
         for no, r in enumerate(바뀜, start=1):
-            lines.append(f"{no}. [{r[COL_KIND]}] "
+            lines.append(f"{no}. [{r[COL_KIND]}] {src_tag(r)}"
                          f"{r[COL_DM] or r[COL_NT]} — {r[COL_TITLE]}")
             lines.append(f"    {r[COL_DIFF]} · {r[COL_LINK]}")
         lines += ["", fill(text, "신규머리", 건수=len(새것))]
@@ -1540,10 +1577,14 @@ def mail_text(rows: list[list], end: datetime, text: dict,
         kind = str(r[COL_KIND] or "")
         표시 = f"[{kind}] " if kind in KIND_COLOR else ""   # 신규는 굳이 안 적는다
         lines.append(f"{no}. [{GRADE_LABEL.get(r[COL_GRADE], r[COL_GRADE])}] "
-                     f"{표시}{r[COL_DM] or r[COL_NT]} — {r[COL_TITLE]}")
+                     f"{표시}{src_tag(r)}{r[COL_DM] or r[COL_NT]}"
+                     f" — {r[COL_TITLE]}")
         금액 = won(r[COL_BUDGET])
         예산 = "예산 미기재" if 금액 == "-" else f"예산 {금액}원"
-        lines.append(f"    마감 {r[COL_DUE]} · {예산}"
+        # 기관 홈페이지에서 온 공고는 마감일시가 없다. 빈칸으로 두면
+        # "마감  · 예산" 처럼 공백만 남아 값이 빠진 것인지 알 수 없다.
+        마감 = f"마감 {r[COL_DUE]}" if r[COL_DUE] else "마감일시 미기재"
+        lines.append(f"    {마감} · {예산}"
                      f" · {search_keywords(r)} · {r[COL_LINK]}")
     return "\n".join(lines)
 

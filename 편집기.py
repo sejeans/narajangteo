@@ -748,24 +748,29 @@ def sample_rows(mod) -> list[list]:
     A·B·C 를 하나씩 둬야 줄 색과 검토안내까지 다 보인다. 공고종류도
     신규·변경·재공고를 하나씩 두고, 예산이 빈 공고도 한 줄 섞어둔다.
 
+    출처도 나라장터·양쪽·사이트를 하나씩 둔다. 아직 기관 홈페이지를 붙이지
+    않아 실제로는 전부 '나라장터' 로만 나오지만, 붙었을 때 표가 어떻게
+    보이는지를 담당자가 미리 볼 수 있어야 한다. '사이트' 줄은 마감일시와
+    예산을 비워 뒀다. 기관 게시판 목록에는 그 두 값이 없다.
+
     '변경' 갈래에서는 여기에 변경·취소 두 건을 더 붙인다 (changed_rows).
     """
     today = f"{datetime.now():%Y-%m-%d}"
     due = f"{datetime.now() + timedelta(days=7):%Y-%m-%d} 10:00"
 
     def row(grade, dm, title, score, kw, why, no, kind="신규", budget="",
-            diff=""):
+            diff="", src=None, deadline=None):
         r = [""] * len(mod.HEADERS)
         r[mod.COL_GRADE] = grade
         r[mod.COL_KIND] = kind
         r[mod.COL_DIFF] = diff
         r[mod.COL_BUDGET] = budget
-        r[mod.COL_SRC] = mod.SRC_G2B
+        r[mod.COL_SRC] = src or mod.SRC_G2B
         r[mod.COL_REG] = today
         r[mod.COL_DM] = dm
         r[mod.COL_NT] = "조달청"
         r[mod.COL_TITLE] = title
-        r[mod.COL_DUE] = due
+        r[mod.COL_DUE] = due if deadline is None else deadline
         r[mod.COL_SCORE] = score
         r[mod.COL_KW] = kw
         r[mod.COL_WHY] = why
@@ -781,10 +786,10 @@ def sample_rows(mod) -> list[list]:
         row("B", "새마을금고중앙회",
             "새마을금고중앙회 대체투자자산 공정가치 평가 및 투자성과 모니터링 용역",
             16, "-", "확정: 공정가치평가 · 대상: 대체투자 · 기관+3", "20260814002",
-            kind="변경", budget=210000000),
-        row("C", "국민연금공단", "기준 포트폴리오 도입을 위한 자산배분 체계 연구용역",
-            6, "-", "대상: 자산배분 · 행위: 연구 · 기관+3", "20260814003",
-            kind="재공고", budget=""),
+            kind="변경", budget=210000000, src=mod.SRC_BOTH),
+        row("C", "한국지방재정공제회", "자산운용 컨설팅 용역",
+            11, "-", "운용전략: 자산운용 컨설팅 · 기관+3", "20260814003",
+            kind="재공고", budget="", src=mod.SRC_SITE, deadline=""),
     ]
 
 
